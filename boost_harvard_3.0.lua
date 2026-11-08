@@ -1,53 +1,55 @@
 -- =====================================================================
--- Harvard Labs v3.0 — Boost + Auto Map (Min Lvl) + Re-Exec / Re-Hop Hub
+-- Harvard Labs v3.0 — Fixed Boost + Anti-Early Replay + AutoMap & Hub
 -- =====================================================================
 
 local ORIGINAL_URL = "https://raw.githubusercontent.com/trongkhumnum-creator/pipiu/refs/heads/main/leaked_harvard_3.0"
--- Nếu bạn up file này lên GitHub/Pastebin, điền link raw vào WRAPPER_URL.
--- Nếu để nil, script sẽ tự lưu chính nó vào "HarvardLabs/autoexec_wrapper.lua" để Re-Execute!
-local WRAPPER_URL  = nil 
+local WRAPPER_URL  = nil -- Điền link raw nếu bạn upload file này lên GitHub, hoặc lưu file vào workspace với tên "boost_harvard_3.0.lua"
 
--- ============ Bảng Tùy Chỉnh Mặc Định ================================
+-- ============ Bảng Tùy Chỉnh (Custom Tuning) =========================
 local CUSTOM = {
     BOOST               = 1.5,   -- Hệ số nhân tầm đánh / bán kính kỹ năng
-    DETECT_ONLY         = true,  -- Chỉ tung chiêu khi quái nằm trong tầm trúng
-    DETECT_HOLD         = 0.2,   -- Thời gian giữ trạng thái đánh sau khi quái lệch tầm
+    DETECT_ONLY         = false, -- Đổi mặc định thành false để tránh kẹt chiêu ở các map đầu (có thể bật lại trên Hub)
+    DETECT_HOLD         = 0.35,  -- Thời gian giữ trạng thái đánh sau khi quái lệch tầm (giây)
     CACHE_HZ            = 15,    -- Tần suất quét mục tiêu mỗi giây
     DRAW_HUD            = true,  -- Hiển thị vòng tròn tầm đánh dưới chân
 
-    -- Tính năng Auto Map & Re-Execute / Re-Hop (Có thể Bật/Tắt ngay trên Hub)
-    AUTO_MAP_BY_MIN_LVL = true,  -- Tự chọn Map + Độ khó theo acc có Level thấp nhất
-    ONLY_MY_ACCOUNT     = false, -- true = chỉ tính Level acc này; false = tính acc thấp nhất trong Server/Whitelist
-    WHITELIST_ACCS      = {},    -- VD: {"AccChinh", "AccPhu1"} (Để trống {} sẽ quét tất cả người trong sảnh)
-    ALLOW_GILDED_SKIES  = false, -- Đặt true nếu muốn tự lên Gilded Skies ở Lv.190+, false để dừng ở Northern Lands
-    FORCE_HARDCORE      = false, -- Tự bật Hardcore
-    FORCE_PRIVATE       = true,  -- Tự tạo phòng Private
+    -- Chống Replay sớm & Bảo vệ Drop sau khi giết Boss
+    ANTI_EARLY_REPLAY   = true,  -- Khóa Replay/Queue khi Boss chưa chết & chưa nhận xong Drop
+    LOOT_WAIT_TIME      = 6,     -- Số giây chờ nhận Drop sau khi Boss chết rồi mới Replay / Về sảnh
+    USE_REPLAY_IN_DUNGEON = true,-- Bật Replay sau khi Boss chết + nhận xong Drop (nếu vẫn đủ Level)
 
-    AUTO_REEXECUTE      = true,  -- Tự động chạy lại script khi qua màn (Lobby <-> Dungeon)
-    AUTO_REHOP          = true,  -- Tự động kết nối lại khi văng game / kẹt sảnh
-    LOBBY_STUCK_TIMEOUT = 120,   -- Quá X giây ở sảnh không vào trận sẽ tự Re-hop
+    -- Tự chọn Map theo Level thấp nhất
+    AUTO_MAP_BY_MIN_LVL = true,  -- Tự động chọn Map + Độ khó theo acc có Level thấp nhất
+    ONLY_MY_ACCOUNT     = false, -- true = chỉ tính Level acc này; false = tính acc thấp nhất trong sảnh
+    WHITELIST_ACCS      = {},    -- VD: {"AccChinh", "AccPhu1"} (Để trống {} sẽ quét toàn bộ người trong sảnh)
+    ALLOW_GILDED_SKIES  = false, -- true = cho phép lên Gilded Skies (Lv.190+); false = dừng ở Northern Lands
+    FORCE_HARDCORE      = false,
+    FORCE_PRIVATE       = true,
 
-    -- Ghi đè nhanh cài đặt của script gốc:
+    -- Auto Re-Execute & Auto Re-Hop
+    AUTO_REEXECUTE      = true,  -- Tự chạy lại script khi chuyển giữa Lobby <-> Dungeon
+    AUTO_REHOP          = true,  -- Tự kết nối lại khi mất kết nối / kẹt Lobby
+    LOBBY_STUCK_TIMEOUT = 120,   -- Quá X giây kẹt ở Lobby không vào được Dungeon sẽ tự Re-hop
+
+    -- Ghi đè nhanh cài đặt của script gốc (để nil nếu giữ mặc định):
     WALK_SPEED          = nil,
     BURST_SPEED         = nil,
     STREAMER            = nil,
-    AUTO_QUEUE          = true,
 }
 -- =====================================================================
 
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local Players           = game:GetService("Players")
-local TeleportService   = game:GetService("TeleportService")
-local HttpService       = game:GetService("HttpService")
-local CoreGui           = game:GetService("CoreGui")
-local UserInputService  = game:GetService("UserInputService")
-local LocalPlayer       = Players.LocalPlayer
+local Players          = game:GetService("Players")
+local TeleportService  = game:GetService("TeleportService")
+local HttpService      = game:GetService("HttpService")
+local CoreGui          = game:GetService("CoreGui")
+local UserInputService = game:GetService("UserInputService")
+local LocalPlayer      = Players.LocalPlayer
 while not LocalPlayer do task.wait(); LocalPlayer = Players.LocalPlayer end
 
--- Lưu/Đọc cài đặt riêng của Hub mở rộng để không bị mất sau khi Teleport
-local HUB_CFG_FILE = "HarvardLabs/boost_hub_config.json"
-local AUTOEXEC_FILE = "HarvardLabs/autoexec_wrapper.lua"
+local LOBBY_PLACE_ID = 2414851778
+local HUB_CFG_FILE   = "HarvardLabs/boost_hub_config.json"
 
 local function loadHubConfig()
     if type(isfile) == "function" and type(readfile) == "function" then
@@ -69,27 +71,24 @@ local function saveHubConfig()
             if type(isfolder) == "function" and not isfolder("HarvardLabs") then
                 pcall(makefolder, "HarvardLabs")
             end
-            local data = {
+            writefile(HUB_CFG_FILE, HttpService:JSONEncode({
                 BOOST               = CUSTOM.BOOST,
                 DETECT_ONLY         = CUSTOM.DETECT_ONLY,
                 DRAW_HUD            = CUSTOM.DRAW_HUD,
+                ANTI_EARLY_REPLAY   = CUSTOM.ANTI_EARLY_REPLAY,
+                LOOT_WAIT_TIME      = CUSTOM.LOOT_WAIT_TIME,
                 AUTO_MAP_BY_MIN_LVL = CUSTOM.AUTO_MAP_BY_MIN_LVL,
                 ONLY_MY_ACCOUNT     = CUSTOM.ONLY_MY_ACCOUNT,
                 ALLOW_GILDED_SKIES  = CUSTOM.ALLOW_GILDED_SKIES,
-                FORCE_HARDCORE      = CUSTOM.FORCE_HARDCORE,
-                FORCE_PRIVATE       = CUSTOM.FORCE_PRIVATE,
                 AUTO_REEXECUTE      = CUSTOM.AUTO_REEXECUTE,
                 AUTO_REHOP          = CUSTOM.AUTO_REHOP,
-                LOBBY_STUCK_TIMEOUT = CUSTOM.LOBBY_STUCK_TIMEOUT,
-            }
-            writefile(HUB_CFG_FILE, HttpService:JSONEncode(data))
+            }))
         end)
     end
 end
 
 loadHubConfig()
 
--- Danh sách bảng yêu cầu Level chuẩn của Dungeon Quest
 local DUNGEON_TIERS = {
     { map = "Desert Temple",     diff = "Easy",      req = 1   },
     { map = "Desert Temple",     diff = "Medium",    req = 5   },
@@ -175,7 +174,108 @@ if not context then error("[Boost] Không tìm thấy context trong getgc") end
 local CFG, RT = context.CFG, context.RT
 _G = _G or {}; getgenv = getgenv or function() return _G end
 
--- 3. Đọc Level thật (Bỏ qua giả mạo "999" của Streamer Mode) ----------
+-- 3. Kiểm tra trạng thái Lobby vs Trong Dungeon -----------------------
+local function isInDungeon()
+    if game.PlaceId ~= LOBBY_PLACE_ID then
+        return true
+    end
+    return workspace:FindFirstChild("dungeon") ~= nil
+end
+
+-- 4. Áp dụng Boost Tầm Đánh Chuẩn (KHÔNG làm tăng khoảng cách đứng lùi)
+-- Chỉ nhân tầm đánh/bán kính chiêu, giữ nguyên mobStandoff/bossStandoff để không bị đứng ngoài tầm ở map đầu!
+local RANGE_KEYS = {
+    "aoeRadius",
+    "abilityRadius",
+    "abilityRangeKnown",
+    "aimReach",
+    "attackRange",
+    "castStartAt",
+    "castProbe",
+    "fieldReach",
+}
+
+local unboostedSnapshot = {}
+local aoeKnownSnapshot  = {}
+
+local function captureBaseAndBoost()
+    for _, k in ipairs(RANGE_KEYS) do
+        local v = CFG[k]
+        if type(v) == "number" then
+            -- Nếu CFG[k] vừa được nạp lại từ profile/config (khác với giá trị đã nhân trước đó), cập nhật lại gốc
+            if not unboostedSnapshot[k] or math.abs(v - unboostedSnapshot[k] * CUSTOM.BOOST) > 0.01 then
+                unboostedSnapshot[k] = v
+            end
+            CFG[k] = unboostedSnapshot[k] * CUSTOM.BOOST
+        end
+    end
+
+    if type(CFG.aoeKnown) == "table" then
+        for spell, entry in pairs(CFG.aoeKnown) do
+            if type(entry) == "table" then
+                aoeKnownSnapshot[spell] = aoeKnownSnapshot[spell] or {}
+                for _, axis in ipairs({ "x", "z", "place" }) do
+                    local val = entry[axis]
+                    if type(val) == "number" then
+                        local snap = aoeKnownSnapshot[spell][axis]
+                        if not snap or math.abs(val - snap * CUSTOM.BOOST) > 0.01 then
+                            aoeKnownSnapshot[spell][axis] = val
+                        end
+                        entry[axis] = aoeKnownSnapshot[spell][axis] * CUSTOM.BOOST
+                    end
+                end
+            end
+        end
+    end
+
+    if CUSTOM.WALK_SPEED then
+        CFG.tweenWalk = CUSTOM.WALK_SPEED
+        CFG.speedNormal = CUSTOM.WALK_SPEED
+    end
+    if CUSTOM.BURST_SPEED then
+        CFG.burstMax = CUSTOM.BURST_SPEED
+        CFG.tweenSprint = CUSTOM.BURST_SPEED
+        CFG.tweenSlam = CUSTOM.BURST_SPEED
+        CFG.speedBurst = CUSTOM.BURST_SPEED
+    end
+    if CUSTOM.STREAMER ~= nil then CFG.streamer = CUSTOM.STREAMER end
+
+    -- Tăng thời gian chờ nhặt đồ của script gốc để không thoát sớm
+    CFG.whLootWait = math.max(tonumber(CFG.whLootWait) or 3, CUSTOM.LOOT_WAIT_TIME)
+    CFG.autoQueueReplayDelay = math.max(tonumber(CFG.autoQueueReplayDelay) or 2, CUSTOM.LOOT_WAIT_TIME)
+end
+
+if type(context.PERSIST) == "table" then
+    for i = #context.PERSIST, 1, -1 do
+        for _, k in ipairs(RANGE_KEYS) do
+            if context.PERSIST[i] == k then table.remove(context.PERSIST, i); break end
+        end
+    end
+end
+
+captureBaseAndBoost()
+
+if type(context.applyClassProfile) == "function" then
+    local orig = context.applyClassProfile
+    context.applyClassProfile = function(...)
+        table.clear(unboostedSnapshot)
+        local ok = orig(...)
+        if ok then captureBaseAndBoost() end
+        return ok
+    end
+end
+
+if type(context.loadConfig) == "function" then
+    local orig = context.loadConfig
+    context.loadConfig = function(...)
+        table.clear(unboostedSnapshot)
+        local ok = orig(...)
+        if ok then captureBaseAndBoost() end
+        return ok
+    end
+end
+
+-- 5. Đọc Level thật (Vượt qua giả mạo "999" của Streamer Mode) --------
 local realLevelCache = {}
 
 local function parseCleanNumber(val)
@@ -189,10 +289,8 @@ end
 
 local function getRealPlayerLevel(plr)
     if not plr then return nil end
-    local fakeStr = tostring(CFG.streamerLevelText or "999"):gsub(",", "")
-    local fakeNum = tonumber(fakeStr) or 999
+    local fakeNum = tonumber(tostring(CFG.streamerLevelText or "999"):gsub(",", "")) or 999
 
-    -- Cách 1: Đọc từ ValueObject trong leaderstats hoặc trực tiếp trong Player
     local ls = plr:FindFirstChild("leaderstats")
     local candidates = {
         ls and ls:FindFirstChild("Level"),
@@ -211,7 +309,6 @@ local function getRealPlayerLevel(plr)
         end
     end
 
-    -- Cách 2: Đọc từ BillboardGui trên đầu nhân vật trong Workspace (nếu chưa bị Streamer ghi đè)
     local char = plr.Character or workspace:FindFirstChild(plr.Name)
     if char then
         for _, desc in ipairs(char:GetDescendants()) do
@@ -229,28 +326,10 @@ local function getRealPlayerLevel(plr)
         end
     end
 
-    -- Cách 3: Nếu là LocalPlayer và đang bật StreamerLevel, tạm tắt 1 frame để lấy số gốc hoặc đọc từ PlayerGui
-    if plr == LocalPlayer then
-        local gui = plr:FindFirstChild("PlayerGui")
-        if gui then
-            for _, desc in ipairs(gui:GetDescendants()) do
-                if desc:IsA("TextLabel") and (desc.Name:lower():find("level") or desc.Text:lower():find("level")) then
-                    local txt = desc.Text:gsub(",", "")
-                    local n = tonumber(txt:match("(%d+)"))
-                    if n and n > 0 and n ~= fakeNum and n < 500 then
-                        realLevelCache[plr.UserId] = n
-                        return n
-                    end
-                end
-            end
-        end
-    end
-
     return realLevelCache[plr.UserId]
 end
 
 local function getLowestAccountLevel()
-    -- Nếu leaderstats bị Streamer Mode khóa thành 999, tạm tắt streamerLevel trong tích tắc để đọc giá trị gốc
     local wasStreamerLvl = CFG.streamerLevel
     if wasStreamerLvl and not realLevelCache[LocalPlayer.UserId] then
         CFG.streamerLevel = false
@@ -270,9 +349,7 @@ local function getLowestAccountLevel()
 
     if CUSTOM.ONLY_MY_ACCOUNT then
         local myLvl = getRealPlayerLevel(LocalPlayer)
-        if myLvl and myLvl > 0 then
-            minLvl = myLvl
-        end
+        if myLvl and myLvl > 0 then minLvl = myLvl end
     else
         for _, plr in ipairs(Players:GetPlayers()) do
             local allow = true
@@ -289,13 +366,8 @@ local function getLowestAccountLevel()
         end
     end
 
-    if wasStreamerLvl then
-        CFG.streamerLevel = true
-    end
-
-    if minLvl == math.huge then
-        minLvl = realLevelCache[LocalPlayer.UserId] or 1
-    end
+    if wasStreamerLvl then CFG.streamerLevel = true end
+    if minLvl == math.huge then minLvl = realLevelCache[LocalPlayer.UserId] or 1 end
     return minLvl, minPlrName
 end
 
@@ -313,113 +385,122 @@ local function selectBestDungeonForLevel(lvl)
     return best.map, best.diff, best.req
 end
 
+-- 6. Quản lý Chống Replay Sớm (Đợi Boss chết + Nhặt Drop xong mới Replay)
+local bossSeenInRun     = false
+local bossKilledAt      = nil
+local bossNameTracked   = nil
 local currentMinLvl, currentMinOwner, currentMap, currentDiff, currentReq = 1, LocalPlayer.Name, CFG.autoQueueMap, CFG.autoQueueDifficulty, 1
 
-local function syncMapToHarvard()
-    if not CUSTOM.AUTO_MAP_BY_MIN_LVL then return end
-    local minLvl, ownerName = getLowestAccountLevel()
-    local bestMap, bestDiff, reqLvl = selectBestDungeonForLevel(minLvl)
-
-    currentMinLvl, currentMinOwner, currentMap, currentDiff, currentReq = minLvl, ownerName, bestMap, bestDiff, reqLvl
-
-    CFG.autoQueue           = true
-    CFG.autoQueueMap        = bestMap
-    CFG.autoQueueDifficulty = bestDiff
-    CFG.autoQueueMinLevel   = 0
-    if CUSTOM.FORCE_HARDCORE ~= nil then CFG.autoQueueHardcore = CUSTOM.FORCE_HARDCORE end
-    if CUSTOM.FORCE_PRIVATE  ~= nil then CFG.autoQueuePrivate  = CUSTOM.FORCE_PRIVATE  end
-end
-
--- 4. Áp dụng tùy chỉnh tầm đánh (Scale) & Khóa cấu hình ---------------
-local KEYS = {
-    "aoeRadius", "aoeDistance",
-    "abilityRadius", "abilityRangeKnown",
-    "aimReach", "attackRange",
-    "castStartAt", "castProbe", "rangeMargin",
-    "mobStandoff", "rangedStandoff",
-    "bossStandoff", "mageStandoff",
-    "odinIdleR", "hubKeepOut",
-    "fieldReach", "fanRadius",
-}
-
-local baseValues = {}
-for _, k in ipairs(KEYS) do
-    if type(CFG[k]) == "number" then baseValues[k] = CFG[k] end
-end
-local baseAoeKnown = {}
-if type(CFG.aoeKnown) == "table" then
-    for spell, entry in pairs(CFG.aoeKnown) do
-        if type(entry) == "table" then
-            baseAoeKnown[spell] = { x = entry.x, z = entry.z, place = entry.place }
-        end
+local function checkBossAndDropState()
+    if not isInDungeon() then
+        bossSeenInRun   = false
+        bossKilledAt    = nil
+        bossNameTracked = nil
+        return "LOBBY"
     end
-end
 
-local function applyCustomSettings()
-    for _, k in ipairs(KEYS) do
-        if type(baseValues[k]) == "number" then
-            CFG[k] = baseValues[k] * CUSTOM.BOOST
-        end
-    end
-    if type(CFG.aoeKnown) == "table" then
-        for spell, entry in pairs(CFG.aoeKnown) do
-            local b = baseAoeKnown[spell]
-            if type(entry) == "table" and b then
-                if type(b.x) == "number" then entry.x = b.x * CUSTOM.BOOST end
-                if type(b.z) == "number" then entry.z = b.z * CUSTOM.BOOST end
-                if type(b.place) == "number" then entry.place = b.place * CUSTOM.BOOST end
+    -- Quét trong context.RD.enemies và workspace.enemies xem Boss đã ra chưa và còn sống không
+    local RD = context.RD
+    local activeBossAlive = false
+
+    if RD and type(RD.enemies) == "table" then
+        for _, enemy in ipairs(RD.enemies) do
+            if enemy.isBoss then
+                bossSeenInRun = true
+                bossNameTracked = enemy.name or (enemy.model and enemy.model.Name) or "Boss"
+                if enemy.humanoid and enemy.humanoid.Health > 0 then
+                    activeBossAlive = true
+                end
             end
         end
     end
 
-    if CUSTOM.WALK_SPEED then
-        CFG.tweenWalk = CUSTOM.WALK_SPEED
-        CFG.speedNormal = CUSTOM.WALK_SPEED
-    end
-    if CUSTOM.BURST_SPEED then
-        CFG.burstMax = CUSTOM.BURST_SPEED
-        CFG.tweenSprint = CUSTOM.BURST_SPEED
-        CFG.tweenSlam = CUSTOM.BURST_SPEED
-        CFG.speedBurst = CUSTOM.BURST_SPEED
-    end
-    if CUSTOM.STREAMER ~= nil then CFG.streamer = CUSTOM.STREAMER end
-    if CUSTOM.AUTO_QUEUE ~= nil then CFG.autoQueue = CUSTOM.AUTO_QUEUE end
-
-    syncMapToHarvard()
-end
-
-if type(context.PERSIST) == "table" then
-    for i = #context.PERSIST, 1, -1 do
-        local key = context.PERSIST[i]
-        for _, k in ipairs(KEYS) do
-            if key == k then table.remove(context.PERSIST, i); break end
+    -- Kiểm tra thêm trong folder enemies của workspace cho các map đầu
+    local enemiesFolder = workspace:FindFirstChild("enemies") or (workspace:FindFirstChild("dungeon") and workspace.dungeon:FindFirstChild("enemies", true))
+    if enemiesFolder then
+        for _, child in ipairs(enemiesFolder:GetChildren()) do
+            if child:IsA("Model") then
+                local hum = child:FindFirstChildOfClass("Humanoid")
+                local isBossModel = child:FindFirstChild("isBoss") ~= nil
+                    or child:GetAttribute("isBoss") == true
+                    or (hum and hum.MaxHealth > 2500 and #enemiesFolder:GetChildren() <= 3)
+                if isBossModel then
+                    bossSeenInRun = true
+                    bossNameTracked = child.Name
+                    if hum and hum.Health > 0 then
+                        activeBossAlive = true
+                    end
+                end
+            end
         end
     end
+
+    -- Nếu context.RD.bossDown đã ghi nhận Boss bị hạ
+    if RD and type(RD.bossDown) == "table" and next(RD.bossDown) ~= nil then
+        bossSeenInRun = true
+    end
+
+    if bossSeenInRun and not activeBossAlive then
+        if not bossKilledAt then
+            bossKilledAt = os.clock()
+            print(("[Boost][Boss] Đã tiêu diệt Boss (%s)! Đang chờ %.1fs để nhận Drop..."):format(tostring(bossNameTracked), CUSTOM.LOOT_WAIT_TIME))
+        end
+        local elapsed = os.clock() - bossKilledAt
+        if elapsed >= CUSTOM.LOOT_WAIT_TIME then
+            return "LOOT_DONE", elapsed
+        else
+            return "WAITING_DROP", CUSTOM.LOOT_WAIT_TIME - elapsed
+        end
+    end
+
+    if bossSeenInRun and activeBossAlive then
+        bossKilledAt = nil
+        return "FIGHTING_BOSS"
+    end
+
+    return "CLEARING_MOBS"
 end
 
-applyCustomSettings()
+local function updateQueueAndReplayLogic()
+    local minLvl, ownerName = getLowestAccountLevel()
+    local bestMap, bestDiff, reqLvl = selectBestDungeonForLevel(minLvl)
+    currentMinLvl, currentMinOwner, currentMap, currentDiff, currentReq = minLvl, ownerName, bestMap, bestDiff, reqLvl
 
-if type(context.applyClassProfile) == "function" then
-    local orig = context.applyClassProfile
-    context.applyClassProfile = function(...)
-        local ok = orig(...); if ok then applyCustomSettings() end; return ok
+    if CUSTOM.AUTO_MAP_BY_MIN_LVL then
+        CFG.autoQueueMap        = bestMap
+        CFG.autoQueueDifficulty = bestDiff
+        CFG.autoQueueMinLevel   = 0
+        if CUSTOM.FORCE_HARDCORE ~= nil then CFG.autoQueueHardcore = CUSTOM.FORCE_HARDCORE end
+        if CUSTOM.FORCE_PRIVATE  ~= nil then CFG.autoQueuePrivate  = CUSTOM.FORCE_PRIVATE  end
     end
-end
-if type(context.loadConfig) == "function" then
-    local orig = context.loadConfig
-    context.loadConfig = function(...)
-        local ok = orig(...); if ok then applyCustomSettings() end; return ok
+
+    local runState, timerVal = checkBossAndDropState()
+
+    if runState == "LOBBY" then
+        -- Khi ở Lobby: Bật autoQueue để tạo phòng vào Dungeon
+        CFG.autoQueue = true
+        CFG.autoQueueReplay = false
+    else
+        -- Khi đang ở trong Dungeon:
+        -- TẮT autoQueue của sảnh để tránh tự tạo phòng mới khi đang đánh!
+        CFG.autoQueue = false
+
+        if CUSTOM.ANTI_EARLY_REPLAY then
+            if runState == "LOOT_DONE" then
+                -- Boss đã chết & đã chờ đủ thời gian lấy Drop -> Cho phép Replay!
+                CFG.autoQueueReplay = CUSTOM.USE_REPLAY_IN_DUNGEON
+                CFG.autoQueueReplayDelay = 0.5
+            else
+                -- Chưa giết xong Boss hoặc đang chờ nhặt Drop -> KHÓA Replay!
+                CFG.autoQueueReplay = false
+            end
+        end
     end
-end
-if type(context.saveConfig) == "function" then
-    local orig = context.saveConfig
-    context.saveConfig = function(...)
-        syncMapToHarvard()
-        return orig(...)
-    end
+
+    return runState, timerVal
 end
 
--- 5. Cơ chế Auto Re-Execute & Auto Re-Hop Chuẩn -----------------------
+-- 7. Auto Re-Execute & Auto Re-Hop -----------------------------------
 local function getQueueOnTeleport()
     return queue_on_teleport
         or (type(syn) == "table" and syn.queue_on_teleport)
@@ -433,39 +514,22 @@ local isTeleportQueued = false
 local function registerAutoReExecute()
     if not CUSTOM.AUTO_REEXECUTE or isTeleportQueued then return false end
     local qFn = getQueueOnTeleport()
-    if type(qFn) ~= "function" then
-        warn("[Boost] Executor của bạn không hỗ trợ hàm queue_on_teleport!")
-        return false
-    end
+    if type(qFn) ~= "function" then return false end
 
-    -- Xây dựng đoạn mã tự chạy lại sau khi chuyển Server/Dungeon
     local payload
     if type(WRAPPER_URL) == "string" and #WRAPPER_URL > 10 then
         payload = ('repeat task.wait() until game:IsLoaded(); loadstring(game:HttpGet("%s"))()'):format(WRAPPER_URL)
     elseif type(isfile) == "function" and pcall(isfile, "boost_harvard_3.0.lua") and isfile("boost_harvard_3.0.lua") then
         payload = 'repeat task.wait() until game:IsLoaded(); loadstring(readfile("boost_harvard_3.0.lua"))()'
-    elseif type(isfile) == "function" and pcall(isfile, AUTOEXEC_FILE) and isfile(AUTOEXEC_FILE) then
-        payload = ('repeat task.wait() until game:IsLoaded(); loadstring(readfile("%s"))()'):format(AUTOEXEC_FILE)
     else
-        -- Nếu người dùng chạy thẳng từ Clipboard, tạo một loader mini tự động tiêm lại cả cấu hình AutoMap + Re-Exec
-        local fallbackLoader = ([[
-            repeat task.wait() until game:IsLoaded()
-            local src = game:HttpGet(%q)
-            local fn = loadstring(src)
-            if fn then fn() end
-        ]]):format(ORIGINAL_URL)
-        payload = fallbackLoader
+        payload = ('repeat task.wait() until game:IsLoaded(); loadstring(game:HttpGet("%s"))()'):format(ORIGINAL_URL)
     end
 
     local ok = pcall(qFn, payload)
-    if ok then
-        isTeleportQueued = true
-        print("[Boost] Đã kích hoạt hàng đợi Auto Re-Execute thành công!")
-    end
+    if ok then isTeleportQueued = true end
     return ok
 end
 
--- Tự lưu bản sao của file nếu người dùng có sẵn file trong workspace, và ĐĂNG KÝ NGAY LẬP TỨC khi chạy script!
 registerAutoReExecute()
 
 LocalPlayer.OnTeleport:Connect(function()
@@ -483,14 +547,13 @@ local function triggerRehop(reason)
     task.spawn(function()
         while true do
             pcall(function()
-                TeleportService:Teleport(2414851778, LocalPlayer)
+                TeleportService:Teleport(LOBBY_PLACE_ID, LocalPlayer)
             end)
             task.wait(4)
         end
     end)
 end
 
--- Theo dõi mất kết nối & kẹt Lobby
 task.spawn(function()
     pcall(function()
         local promptGui = CoreGui:WaitForChild("RobloxPromptGui", 10)
@@ -501,11 +564,6 @@ task.spawn(function()
                     triggerRehop("Mất kết nối / Kick (ErrorPrompt)")
                 end
             end)
-            for _, child in ipairs(overlay:GetChildren()) do
-                if child.Name == "ErrorPrompt" and CUSTOM.AUTO_REHOP then
-                    triggerRehop("Mất kết nối / Kick (ErrorPrompt)")
-                end
-            end
         end
     end)
 end)
@@ -518,7 +576,7 @@ TeleportService.TeleportInitFailed:Connect(function(_, res, msg)
     end
 end)
 
--- 6. Kiểm tra mục tiêu trong tầm đánh (Landing Detection) -------------
+-- 8. Kiểm tra mục tiêu trong tầm đánh (Landing Detection) -------------
 local cacheAt, cacheOK, cacheTgt = 0, false, nil
 local lastHitAt, lastTgt = 0, nil
 
@@ -570,7 +628,6 @@ local function detectionRange()
     return reach + rad
 end
 
--- 7. Chặn tung chiêu khi chưa tới tầm (Bỏ qua chiêu Buff) -------------
 local function gate(fn)
     if type(fn) ~= "function" then return fn end
     return function(slot, ...)
@@ -583,7 +640,7 @@ end
 if type(context.gsSlotReady) == "function" then context.gsSlotReady = gate(context.gsSlotReady) end
 if type(context.slotReady) == "function" then context.slotReady = gate(context.slotReady) end
 
--- 8. Giao diện Mini-Hub Mở Rộng (Tích hợp trực tiếp trên màn hình) ----
+-- 9. Giao diện Mini-Hub Mở Rộng ---------------------------------------
 local guiParent = (type(gethui) == "function" and gethui()) or CoreGui or LocalPlayer:WaitForChild("PlayerGui")
 pcall(function()
     local old = guiParent:FindFirstChild("HLBoostMiniHub")
@@ -595,16 +652,13 @@ screenGui.Name = "HLBoostMiniHub"
 screenGui.ResetOnSpawn = false
 screenGui.Parent = guiParent
 
-local mainFrame = Instance.new("Frame")
-mainFrame.Size = UDim2.new(0, 270, 0, 265)
-mainFrame.Position = UDim2.new(0, 18, 0.5, -130)
+local mainFrame = Instance.new("Frame", screenGui)
+mainFrame.Size = UDim2.new(0, 280, 0, 310)
+mainFrame.Position = UDim2.new(0, 18, 0.5, -155)
 mainFrame.BackgroundColor3 = Color3.fromRGB(20, 16, 20)
 mainFrame.BorderSizePixel = 0
 mainFrame.Active = true
-mainFrame.Parent = screenGui
-
-local corner = Instance.new("UICorner", mainFrame)
-corner.CornerRadius = UDim.new(0, 8)
+Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 8)
 
 local stroke = Instance.new("UIStroke", mainFrame)
 stroke.Color = Color3.fromRGB(190, 35, 45)
@@ -620,10 +674,10 @@ local titleLabel = Instance.new("TextLabel", titleBar)
 titleLabel.Size = UDim2.new(1, -40, 1, 0)
 titleLabel.Position = UDim2.new(0, 10, 0, 0)
 titleLabel.BackgroundTransparency = 1
-titleLabel.Text = "Harvard v3.0 — Boost & AutoMap"
+titleLabel.Text = "Harvard v3.0 — Fix Boss Drop & AutoMap"
 titleLabel.TextColor3 = Color3.fromRGB(255, 230, 230)
 titleLabel.Font = Enum.Font.GothamBold
-titleLabel.TextSize = 12
+titleLabel.TextSize = 11
 titleLabel.TextXAlignment = Enum.TextXAlignment.Left
 
 local minBtn = Instance.new("TextButton", titleBar)
@@ -642,14 +696,14 @@ contentFrame.Position = UDim2.new(0, 8, 0, 34)
 contentFrame.BackgroundTransparency = 1
 
 local infoLabel = Instance.new("TextLabel", contentFrame)
-infoLabel.Size = UDim2.new(1, 0, 0, 38)
+infoLabel.Size = UDim2.new(1, 0, 0, 48)
 infoLabel.Position = UDim2.new(0, 0, 0, 0)
 infoLabel.BackgroundColor3 = Color3.fromRGB(30, 24, 28)
 infoLabel.TextColor3 = Color3.fromRGB(120, 240, 160)
 infoLabel.Font = Enum.Font.GothamSemibold
 infoLabel.TextSize = 11
 infoLabel.TextWrapped = true
-infoLabel.Text = "Đang quét Level & Map..."
+infoLabel.Text = "Đang kiểm tra trạng thái..."
 Instance.new("UICorner", infoLabel).CornerRadius = UDim.new(0, 6)
 
 local function createToggle(yOffset, text, key, onToggle)
@@ -679,25 +733,18 @@ local function createToggle(yOffset, text, key, onToggle)
     return refresh
 end
 
-createToggle(44,  "Tự chọn Map theo Min Lvl", "AUTO_MAP_BY_MIN_LVL", function(v)
-    if v then syncMapToHarvard() end
-end)
-
-createToggle(76,  "Chế độ quét (Bật = Chỉ mình / Tắt = Cả sảnh)", "ONLY_MY_ACCOUNT", function()
-    syncMapToHarvard()
-end)
-
-createToggle(108, "Auto Re-Execute (Qua màn)", "AUTO_REEXECUTE", function(v)
+createToggle(54,  "Chống Replay sớm (Đợi Boss + Drop)", "ANTI_EARLY_REPLAY")
+createToggle(86,  "Tự chọn Map theo Min Lvl", "AUTO_MAP_BY_MIN_LVL")
+createToggle(118, "Chế độ quét (Bật = Chỉ mình / Tắt = Cả sảnh)", "ONLY_MY_ACCOUNT")
+createToggle(150, "Auto Re-Execute (Qua màn)", "AUTO_REEXECUTE", function(v)
     if v then registerAutoReExecute() end
 end)
-
-createToggle(140, "Auto Re-Hop (Chống kẹt/Disconnect)", "AUTO_REHOP")
-
-createToggle(172, "Chỉ đánh khi quái vào tầm (Detect)", "DETECT_ONLY")
+createToggle(182, "Auto Re-Hop (Chống kẹt/Disconnect)", "AUTO_REHOP")
+createToggle(214, "Chặn đánh ngoài tầm (Detect Gate)", "DETECT_ONLY")
 
 local rehopNowBtn = Instance.new("TextButton", contentFrame)
 rehopNowBtn.Size = UDim2.new(1, 0, 0, 24)
-rehopNowBtn.Position = UDim2.new(0, 0, 0, 204)
+rehopNowBtn.Position = UDim2.new(0, 0, 0, 246)
 rehopNowBtn.BackgroundColor3 = Color3.fromRGB(140, 45, 50)
 rehopNowBtn.TextColor3 = Color3.fromRGB(255, 240, 240)
 rehopNowBtn.Font = Enum.Font.GothamBold
@@ -709,7 +756,6 @@ rehopNowBtn.MouseButton1Click:Connect(function()
     triggerRehop("Người dùng bấm Re-Hop thủ công trên Hub")
 end)
 
--- Kéo thả bảng Hub & Thu gọn
 local dragging, dragStart, startPos
 titleBar.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
@@ -732,11 +778,11 @@ local minimized = false
 minBtn.MouseButton1Click:Connect(function()
     minimized = not minimized
     contentFrame.Visible = not minimized
-    mainFrame.Size = minimized and UDim2.new(0, 270, 0, 30) or UDim2.new(0, 270, 0, 265)
+    mainFrame.Size = minimized and UDim2.new(0, 280, 0, 30) or UDim2.new(0, 280, 0, 310)
     minBtn.Text = minimized and "+" or "—"
 end)
 
--- 9. Hiển thị vòng HUD & Luồng cập nhật liên tục ----------------------
+-- 10. Vòng lặp kiểm soát trạng thái & HUD -----------------------------
 local status = { range = detectionRange(), canFire = false, target = nil, at = os.clock() }
 getgenv().HLBoostStatus  = status
 getgenv().HLBoostRange   = detectionRange
@@ -762,40 +808,42 @@ if CUSTOM.DRAW_HUD then
     end)
 end
 
--- Luồng ép Map liên tục mỗi 1 giây để không bị UI gốc ghi đè
 task.spawn(function()
     local lobbyStart = os.clock()
-    local lastMapSig = ""
     while not RT.destroyed do
-        if CUSTOM.AUTO_MAP_BY_MIN_LVL then
-            syncMapToHarvard()
-            local sig = ("%s|%s|%d"):format(tostring(currentMap), tostring(currentDiff), currentMinLvl)
-            if sig ~= lastMapSig then
-                lastMapSig = sig
-                if type(context.refreshAll) == "function" then pcall(context.refreshAll) end
-            end
+        local runState, timerVal = updateQueueAndReplayLogic()
+        local stateStr = runState
+        if runState == "WAITING_DROP" then
+            stateStr = ("Chờ lấy Drop (%.1fs)..."):format(timerVal or 0)
+        elseif runState == "CLEARING_MOBS" then
+            stateStr = "Đang dọn quái (Khóa Replay)"
+        elseif runState == "FIGHTING_BOSS" then
+            stateStr = "Đang đánh Boss (Khóa Replay)"
+        elseif runState == "LOOT_DONE" then
+            stateStr = "Đã lấy Drop -> Cho phép Replay!"
+        elseif runState == "LOBBY" then
+            stateStr = "Đang ở Sảnh -> Tự tìm trận"
         end
 
-        infoLabel.Text = ("Min Lvl: %d (%s)\nMap: %s [%s - Req %d]"):format(
+        infoLabel.Text = ("Min Lvl: %d (%s)\nMap: %s [%s - Req %d]\nTrạng thái: %s"):format(
             currentMinLvl,
-             tostring(currentMinOwner):sub(1, 12),
+            tostring(currentMinOwner):sub(1, 12),
             tostring(CFG.autoQueueMap),
             tostring(CFG.autoQueueDifficulty),
-            currentReq
+            currentReq,
+            stateStr
         )
 
-        -- Kiểm tra kẹt ở Lobby
-        local inDungeon = workspace:FindFirstChild("dungeon") ~= nil
-        if not inDungeon and CFG.autoQueue and CUSTOM.AUTO_REHOP and CUSTOM.LOBBY_STUCK_TIMEOUT then
+        if runState == "LOBBY" and CUSTOM.AUTO_REHOP and CUSTOM.LOBBY_STUCK_TIMEOUT then
             if os.clock() - lobbyStart > CUSTOM.LOBBY_STUCK_TIMEOUT then
-                triggerRehop("Kẹt ở sảnh quá " .. tostring(CUSTOM.LOBBY_STUCK_TIMEOUT) .. "s")
+                triggerRehop("Kẹt ở Lobby quá " .. tostring(CUSTOM.LOBBY_STUCK_TIMEOUT) .. "s")
                 break
             end
         else
             lobbyStart = os.clock()
         end
 
-        task.wait(1)
+        task.wait(0.5)
     end
 end)
 
@@ -819,4 +867,4 @@ task.spawn(function()
     end
 end)
 
-print(("[Boost] Đã tải thành công | MinLvl: %d -> Map: %s (%s)"):format(currentMinLvl, tostring(currentMap), tostring(currentDiff)))
+print("[Boost] Đã tải bản Fix Boss Drop & AutoMap thành công!")
