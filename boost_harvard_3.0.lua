@@ -1,5 +1,5 @@
 -- =====================================================================
--- Harvard Labs v3.0 — DQ Reborn Edition (Integrated Hub + AutoSkill + AutoMap)
+-- Harvard Labs v3.0 — DQ Reborn (Full Difficulty & Map Progression Fix)
 -- =====================================================================
 
 local WRAPPER_SOURCE = [=====[
@@ -21,8 +21,8 @@ local CUSTOM = {
     ANTI_EARLY_REPLAY     = true,  -- Khóa Replay khi Boss chưa chết & chưa nhận xong Drop
     LOOT_WAIT_TIME        = 6,     -- Số giây chờ nhận Drop sau khi Boss chết
 
-    -- 3. Tự chọn Map theo Level thấp nhất
-    AUTO_MAP_BY_MIN_LVL   = true,  -- Tự động chọn Map + Độ khó theo acc có Level thấp nhất
+    -- 3. Tự chọn Map & Độ khó theo Level thấp nhất (Chuẩn Wiki DQ Reborn)
+    AUTO_MAP_BY_MIN_LVL   = true,  -- Tự động nâng Độ khó & Map theo acc có Level thấp nhất
     ONLY_MY_ACCOUNT       = false, -- true = chỉ tính Level acc này; false = tính acc thấp nhất trong sảnh
     WHITELIST_ACCS        = {},    -- VD: {"AccChinh", "AccPhu1"} (Để trống {} sẽ quét toàn bộ người trong sảnh)
     ALLOW_GILDED_SKIES    = true,  -- Cho phép lên Gilded Skies ở Lv.190+
@@ -34,6 +34,8 @@ local CUSTOM = {
     AUTO_REHOP            = true,
     LOBBY_STUCK_TIMEOUT   = 90,
     REBORN_LOBBY_ID       = nil,   -- Tự động lưu PlaceId Sảnh của Dungeon Quest Reborn
+    ENTERED_MAP           = nil,   -- Lưu Map lúc bắt đầu vào Dungeon để so sánh khi lên cấp
+    ENTERED_DIFF          = nil,   -- Lưu Độ khó lúc bắt đầu vào Dungeon để biết khi nào cần về Sảnh nâng Độ khó
 }
 -- =====================================================================
 
@@ -62,7 +64,7 @@ if type(isfile) == "function" and type(readfile) == "function" then
         local ok2, data = pcall(function() return HttpService:JSONDecode(readfile(HUB_CFG_FILE)) end)
         if ok2 and type(data) == "table" then
             for k, v in pairs(data) do
-                if CUSTOM[k] ~= nil or k == "REBORN_LOBBY_ID" then CUSTOM[k] = v end
+                CUSTOM[k] = v
             end
         end
     end
@@ -88,13 +90,15 @@ local function saveHubConfig()
                 AUTO_REEXECUTE      = CUSTOM.AUTO_REEXECUTE,
                 AUTO_REHOP          = CUSTOM.AUTO_REHOP,
                 REBORN_LOBBY_ID     = CUSTOM.REBORN_LOBBY_ID,
+                ENTERED_MAP         = CUSTOM.ENTERED_MAP,
+                ENTERED_DIFF        = CUSTOM.ENTERED_DIFF,
             }))
         end)
     end
 end
 
 -- =====================================================================
--- 1. TỰ ĐỘNG XÁC ĐỊNH PLACE ID SẢNH CỦA DUNGEON QUEST REBORN
+-- 1. XÁC ĐỊNH TRẠNG THÁI SẢNH / DUNGEON & PLACE ID CỦA DQ REBORN
 -- =====================================================================
 local function isInDungeon()
     if workspace:FindFirstChild("dungeon") ~= nil then return true end
@@ -104,7 +108,6 @@ local function isInDungeon()
 end
 
 local function resolveRebornLobbyPlaceId()
-    -- Nếu đang đứng ở Sảnh, lưu ngay PlaceId hiện tại làm Sảnh chuẩn của DQ Reborn
     if not isInDungeon() then
         if CUSTOM.REBORN_LOBBY_ID ~= game.PlaceId then
             CUSTOM.REBORN_LOBBY_ID = game.PlaceId
@@ -113,12 +116,10 @@ local function resolveRebornLobbyPlaceId()
         return CUSTOM.REBORN_LOBBY_ID
     end
 
-    -- Nếu đã lưu từ trước (và không phải ID 2414851778 của DQ cũ)
     if type(CUSTOM.REBORN_LOBBY_ID) == "number" and CUSTOM.REBORN_LOBBY_ID > 0 and CUSTOM.REBORN_LOBBY_ID ~= 2414851778 then
         return CUSTOM.REBORN_LOBBY_ID
     end
 
-    -- Tự động dò PlaceId gốc (Lobby) của Universe Dungeon Quest Reborn thông qua AssetService
     local ok, pages = pcall(function() return AssetService:GetGamePlacesAsync() end)
     if ok and pages then
         local okPage, list = pcall(function() return pages:GetCurrentPage() end)
@@ -150,15 +151,24 @@ end
 task.spawn(resolveRebornLobbyPlaceId)
 
 -- =====================================================================
--- 2. ĐỌC LEVEL THẬT TRƯỚC KHI HARVARD LABS GHI ĐÈ "999"
+-- 2. BẢNG TIER MAP & ĐỘ KHÓ CHUẨN WIKI DUNGEON QUEST REBORN
 -- =====================================================================
 local DUNGEON_TIERS = {
+    -- Desert Temple (5 Độ khó: 1, 6, 12, 20, 27)
     { map = "Desert Temple",     diff = "Easy",      req = 1   },
-    { map = "Desert Temple",     diff = "Medium",    req = 5   },
-    { map = "Desert Temple",     diff = "Hard",      req = 15  },
-    { map = "Winter Outpost",    diff = "Easy",      req = 30  },
+    { map = "Desert Temple",     diff = "Medium",    req = 6   },
+    { map = "Desert Temple",     diff = "Hard",      req = 12  },
+    { map = "Desert Temple",     diff = "Insane",    req = 20  },
+    { map = "Desert Temple",     diff = "Nightmare", req = 27  },
+
+    -- Winter Outpost (5 Độ khó: 33, 40, 45, 50, 55)
+    { map = "Winter Outpost",    diff = "Easy",      req = 33  },
     { map = "Winter Outpost",    diff = "Medium",    req = 40  },
-    { map = "Winter Outpost",    diff = "Hard",      req = 50  },
+    { map = "Winter Outpost",    diff = "Hard",      req = 45  },
+    { map = "Winter Outpost",    diff = "Insane",    req = 50  },
+    { map = "Winter Outpost",    diff = "Nightmare", req = 55  },
+
+    -- Từ Pirate Island trở đi (2 Độ khó: Insane & Nightmare cách nhau 5 cấp)
     { map = "Pirate Island",     diff = "Insane",    req = 60  },
     { map = "Pirate Island",     diff = "Nightmare", req = 65  },
     { map = "King's Castle",     diff = "Insane",    req = 70  },
@@ -201,9 +211,16 @@ end
 
 local function readPlayerLevelRaw(plr)
     if not plr then return nil end
+    -- 1) Đọc từ leaderstats.Level hoặc ValueObject trong Player
     local ls = plr:FindFirstChild("leaderstats")
-    if ls then
-        local lvlObj = ls:FindFirstChild("Level") or ls:FindFirstChild("level") or ls:FindFirstChild("Lvl")
+    local objs = {
+        ls and ls:FindFirstChild("Level"),
+        ls and ls:FindFirstChild("level"),
+        ls and ls:FindFirstChild("Lvl"),
+        plr:FindFirstChild("level"),
+        plr:FindFirstChild("Level"),
+    }
+    for _, lvlObj in ipairs(objs) do
         if lvlObj then
             local n = parseLevelValue(lvlObj.Value)
             if n and n > 0 and n ~= 999 then
@@ -212,6 +229,8 @@ local function readPlayerLevelRaw(plr)
             end
         end
     end
+
+    -- 2) Đọc từ BillboardGui trên đầu nhân vật trong Workspace
     local char = plr.Character or workspace:FindFirstChild(plr.Name)
     if char then
         for _, desc in ipairs(char:GetDescendants()) do
@@ -228,6 +247,24 @@ local function readPlayerLevelRaw(plr)
             end
         end
     end
+
+    -- 3) Đọc từ PlayerGui nếu là LocalPlayer
+    if plr == LocalPlayer then
+        local pgui = plr:FindFirstChild("PlayerGui")
+        if pgui then
+            for _, desc in ipairs(pgui:GetDescendants()) do
+                if desc:IsA("TextLabel") and (desc.Name:lower():find("level") or desc.Text:lower():find("level")) then
+                    local txt = desc.Text:gsub(",", "")
+                    local n = tonumber(txt:match("[Ll]evel:?%s*(%d+)") or txt:match("[Ll][Vv][Ll]?%.?%s*(%d+)") or txt:match("^(%d+)$"))
+                    if n and n > 0 and n ~= 999 and n < 500 then
+                        realLevelCache[plr.UserId] = n
+                        return n
+                    end
+                end
+            end
+        end
+    end
+
     return realLevelCache[plr.UserId]
 end
 
@@ -285,6 +322,47 @@ local function selectBestDungeonForLevel(lvl)
         end
     end
     return best.map, best.diff, best.req
+end
+
+-- Ghi đè trực tiếp Map & Độ khó chuẩn vào file config của Harvard Labs trước khi script gốc chạy
+local function writeMapAndDiffToHarvardJson(targetMap, targetDiff)
+    if type(isfile) ~= "function" or type(readfile) ~= "function" or type(writefile) ~= "function" then
+        return
+    end
+    pcall(function()
+        local uid = tonumber(LocalPlayer.UserId) or 0
+        local cfgPath = ("HarvardLabs/configs/release_%s.json"):format(uid > 0 and tostring(uid) or "unknown")
+        if isfile(cfgPath) then
+            local ok, decoded = pcall(function() return HttpService:JSONDecode(readfile(cfgPath)) end)
+            if ok and type(decoded) == "table" then
+                decoded.streamerLevel       = false
+                decoded.autoQueueMap        = targetMap
+                decoded.autoQueueDifficulty = targetDiff
+                decoded.autoQueueHardcore   = CUSTOM.FORCE_HARDCORE
+                decoded.autoQueuePrivate    = CUSTOM.FORCE_PRIVATE
+                writefile(cfgPath, HttpService:JSONEncode(decoded))
+            end
+        end
+    end)
+end
+
+local initMinLvl, initOwner = getLowestAccountLevel()
+local initMap, initDiff, initReq = selectBestDungeonForLevel(initMinLvl)
+
+if CUSTOM.AUTO_MAP_BY_MIN_LVL then
+    writeMapAndDiffToHarvardJson(initMap, initDiff)
+end
+
+-- Nếu đang ở Sảnh, cập nhật ENTERED_MAP & ENTERED_DIFF theo mục tiêu mới nhất sẽ vào
+if not isInDungeon() then
+    CUSTOM.ENTERED_MAP  = initMap
+    CUSTOM.ENTERED_DIFF = initDiff
+    saveHubConfig()
+elseif not CUSTOM.ENTERED_MAP or not CUSTOM.ENTERED_DIFF then
+    -- Nếu chạy script lần đầu khi đã ở sẵn trong Dungeon
+    CUSTOM.ENTERED_MAP  = initMap
+    CUSTOM.ENTERED_DIFF = initDiff
+    saveHubConfig()
 end
 
 -- =====================================================================
@@ -469,7 +547,6 @@ local function findNearestLivingEnemy()
     local best, bestD = nil, math.huge
     local RD = context.RD
 
-    -- 1) Kiểm tra trong context.RD.enemies của Harvard Labs
     if RD and type(RD.enemies) == "table" then
         for _, enemy in ipairs(RD.enemies) do
             if enemy.root and enemy.root.Parent
@@ -483,7 +560,6 @@ local function findNearestLivingEnemy()
         end
     end
 
-    -- 2) Quét dự phòng trực tiếp trong workspace.enemies và workspace.dungeon cho các map đầu của DQ Reborn
     if not best then
         local containers = {
             workspace:FindFirstChild("enemies"),
@@ -538,7 +614,6 @@ end
 if type(context.gsSlotReady) == "function" then context.gsSlotReady = gate(context.gsSlotReady) end
 if type(context.slotReady) == "function" then context.slotReady = gate(context.slotReady) end
 
--- Luồng kích hoạt Q / E & Tool trực tiếp cho Dungeon Quest Reborn
 task.spawn(function()
     while not RT.destroyed do
         task.wait(0.22)
@@ -546,7 +621,6 @@ task.spawn(function()
             local hasTarget, tgt = detection()
             if hasTarget and tgt then
                 local now = os.clock()
-                -- Bấm Q & E nếu script gốc chưa kích hoạt
                 if CFG.autoQ and (now - (tonumber(RT.lastQ) or 0) > 0.7) then
                     pcall(function()
                         VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Q, false, game)
@@ -561,7 +635,6 @@ task.spawn(function()
                         VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
                     end)
                 end
-                -- Kích hoạt Remote hoặc Event nằm trong các Ability Tool trong Backpack / Character (nếu DQ Reborn dùng Tool Event)
                 pcall(function()
                     local char = LocalPlayer.Character
                     if char then
@@ -578,15 +651,16 @@ task.spawn(function()
 end)
 
 -- =====================================================================
--- 6. KIỂM SOÁT BOSS DROP & AUTO MAP THEO MIN LEVEL
+-- 6. KIỂM SOÁT BOSS DROP & CHUYỂN ĐỘ KHÓ / MAP KHI LÊN CẤP
 -- =====================================================================
 local bossSpawnedInRun = false
 local bossDeadAt       = nil
 local bossTrackedName  = nil
-local currentMinLvl, currentMinOwner = getLowestAccountLevel()
-local currentMap, currentDiff, currentReq = selectBestDungeonForLevel(currentMinLvl)
+local currentMinLvl, currentMinOwner = initMinLvl, initOwner
+local targetMap, targetDiff, targetReq = initMap, initDiff, initReq
 local currentRunState  = "LOBBY"
 local currentDropTimer = 0
+local needLeaveForUpgrade = false
 
 local function evaluateDungeonBossState()
     if not isInDungeon() then
@@ -678,8 +752,8 @@ hbConn = RunService.Heartbeat:Connect(function()
 
     CFG.streamerLevel = false
     if CUSTOM.AUTO_MAP_BY_MIN_LVL then
-        CFG.autoQueueMap        = currentMap
-        CFG.autoQueueDifficulty = currentDiff
+        CFG.autoQueueMap        = targetMap
+        CFG.autoQueueDifficulty = targetDiff
         CFG.autoQueueMinLevel   = 0
         CFG.autoQueueHardcore   = CUSTOM.FORCE_HARDCORE
         CFG.autoQueuePrivate    = CUSTOM.FORCE_PRIVATE
@@ -692,7 +766,8 @@ hbConn = RunService.Heartbeat:Connect(function()
     else
         CFG.autoQueue = false
         if CUSTOM.ANTI_EARLY_REPLAY then
-            if currentRunState == "LOOT_DONE" then
+            -- Nếu đã đủ Level nâng Độ khó mới hoặc Map mới -> TUYỆT ĐỐI KHÔNG BẤM REPLAY (để về Sảnh tạo phòng độ khó mới)
+            if currentRunState == "LOOT_DONE" and not needLeaveForUpgrade then
                 CFG.autoQueueReplay      = true
                 CFG.autoQueueReplayDelay = 0.5
             else
@@ -734,19 +809,32 @@ end
 registerAutoReExecute()
 
 LocalPlayer.OnTeleport:Connect(function()
+    if not isInDungeon() then
+        -- Khi chuẩn bị Teleport từ Sảnh vào Dungeon, khóa lại Map & Độ khó đã dùng để vào
+        CUSTOM.ENTERED_MAP  = targetMap
+        CUSTOM.ENTERED_DIFF = targetDiff
+    end
     saveHubConfig()
+    if CUSTOM.AUTO_MAP_BY_MIN_LVL then
+        writeMapAndDiffToHarvardJson(targetMap, targetDiff)
+    end
     registerAutoReExecute()
 end)
 
+local isRehopping = false
 local function triggerRehop(reason)
-    if not CUSTOM.AUTO_REHOP then return end
+    if not CUSTOM.AUTO_REHOP or isRehopping then return end
+    isRehopping = true
     local targetLobbyId = resolveRebornLobbyPlaceId()
-    warn(("[Boost][DQ Reborn Re-Hop] Đang chuyển tới Sảnh DQ Reborn (PlaceId: %s) | Lý do: %s"):format(tostring(targetLobbyId), tostring(reason)))
+    warn(("[Boost][DQ Reborn] Đang về Sảnh (PlaceId: %s) | Lý do: %s"):format(tostring(targetLobbyId), tostring(reason)))
+
     saveHubConfig()
+    if CUSTOM.AUTO_MAP_BY_MIN_LVL then
+        writeMapAndDiffToHarvardJson(targetMap, targetDiff)
+    end
     registerAutoReExecute()
 
     task.spawn(function()
-        -- Thử gọi Remote về sảnh của game trước nếu đang ở trong Dungeon
         if isInDungeon() then
             pcall(function()
                 local remotes = ReplicatedStorage:FindFirstChild("remotes")
@@ -782,6 +870,7 @@ end)
 TeleportService.TeleportInitFailed:Connect(function(_, res, msg)
     if CUSTOM.AUTO_REHOP then
         warn("[Boost] Teleport lỗi (" .. tostring(res) .. "): " .. tostring(msg))
+        isRehopping = false
         task.wait(3)
         triggerRehop("TeleportInitFailed")
     end
@@ -791,7 +880,6 @@ end)
 -- 8. TÍCH HỢP TRỰC TIẾP VÀO HUB CÓ SẴN CỦA HARVARD LABS (RIGHTSHIFT)
 -- =====================================================================
 local function findHarvardHubMainFrame()
-    -- 1) Kiểm tra trong bảng context.UI của Harvard Labs
     if type(context.UI) == "table" then
         for _, v in pairs(context.UI) do
             if typeof(v) == "Instance" then
@@ -808,7 +896,6 @@ local function findHarvardHubMainFrame()
         end
     end
 
-    -- 2) Quét trong gethui(), CoreGui và PlayerGui tìm ScreenGui có tiêu đề "Harvard" hoặc "v3.0"
     local roots = {}
     if type(gethui) == "function" then pcall(function() roots[#roots + 1] = gethui() end) end
     roots[#roots + 1] = CoreGui
@@ -822,7 +909,6 @@ local function findHarvardHubMainFrame()
                         if desc:IsA("TextLabel") then
                             local t = string.lower(desc.Text or "")
                             if t:find("harvard") or t:find("v3.0") or t:find("c84b") then
-                                -- Tìm Frame gốc lớn nhất chứa TextLabel này
                                 local topFrame = desc:FindFirstAncestorWhichIsA("Frame")
                                 while topFrame and topFrame.Parent and topFrame.Parent:IsA("Frame") do
                                     topFrame = topFrame.Parent
@@ -845,7 +931,6 @@ for _ = 1, 30 do
     task.wait(0.1)
 end
 
--- Dọn bản cũ nếu có
 if harvardWindow then
     local old = harvardWindow:FindFirstChild("HLRebornIntegratedPanel")
     if old then old:Destroy() end
@@ -859,8 +944,6 @@ pcall(function()
     if old2 then old2:Destroy() end
 end)
 
--- Nếu tìm thấy cửa sổ chính của Harvard Labs -> Gắn trực tiếp làm nhánh mở rộng liền khối bên cạnh Hub gốc!
--- Khi bấm RightShift đóng/mở hoặc kéo cửa sổ Harvard Labs, nhánh này tự động đi theo 100%!
 local panelParent
 if harvardWindow then
     panelParent = harvardWindow
@@ -875,12 +958,11 @@ end
 local extFrame = Instance.new("Frame")
 extFrame.Name = "HLRebornIntegratedPanel"
 if harvardWindow then
-    -- Gắn liền sát cạnh phải của cửa sổ Harvard Labs
-    extFrame.Size = UDim2.new(0, 260, 1, 0)
+    extFrame.Size = UDim2.new(0, 265, 1, 0)
     extFrame.Position = UDim2.new(1, 6, 0, 0)
 else
-    extFrame.Size = UDim2.new(0, 260, 0, 310)
-    extFrame.Position = UDim2.new(0, 18, 0.5, -155)
+    extFrame.Size = UDim2.new(0, 265, 0, 320)
+    extFrame.Position = UDim2.new(0, 18, 0.5, -160)
     extFrame.Active = true
 end
 extFrame.BackgroundColor3 = Color3.fromRGB(18, 12, 14)
@@ -902,7 +984,7 @@ local headerTitle = Instance.new("TextLabel", header)
 headerTitle.Size = UDim2.new(1, -16, 1, 0)
 headerTitle.Position = UDim2.new(0, 10, 0, 0)
 headerTitle.BackgroundTransparency = 1
-headerTitle.Text = "DQ Reborn — Mở Rộng (Gắn liền Hub)"
+headerTitle.Text = "DQ Reborn — Auto Difficulty & Map"
 headerTitle.TextColor3 = Color3.fromRGB(255, 225, 225)
 headerTitle.Font = Enum.Font.GothamBold
 headerTitle.TextSize = 11
@@ -914,15 +996,15 @@ body.Position = UDim2.new(0, 7, 0, 32)
 body.BackgroundTransparency = 1
 body.BorderSizePixel = 0
 body.ScrollBarThickness = 3
-body.CanvasSize = UDim2.new(0, 0, 0, 290)
+body.CanvasSize = UDim2.new(0, 0, 0, 300)
 
 local infoBox = Instance.new("TextLabel", body)
-infoBox.Size = UDim2.new(1, 0, 0, 54)
+infoBox.Size = UDim2.new(1, 0, 0, 62)
 infoBox.Position = UDim2.new(0, 0, 0, 0)
 infoBox.BackgroundColor3 = Color3.fromRGB(28, 18, 22)
 infoBox.TextColor3 = Color3.fromRGB(125, 245, 165)
 infoBox.Font = Enum.Font.GothamSemibold
-infoBox.TextSize = 11
+infoBox.TextSize = 10
 infoBox.TextWrapped = true
 infoBox.Text = "Đang đồng bộ DQ Reborn..."
 Instance.new("UICorner", infoBox).CornerRadius = UDim.new(0, 6)
@@ -954,30 +1036,29 @@ local function addHubToggle(yPos, label, key, callback)
     syncVisual()
 end
 
-addHubToggle(60,  "Auto Skill Q/E (DQ Reborn)", "AUTO_SKILL_ASSIST")
-addHubToggle(92,  "Chống Replay Sớm (Đợi Drop Boss)", "ANTI_EARLY_REPLAY")
-addHubToggle(124, "Tự Chọn Map Theo Min Lvl", "AUTO_MAP_BY_MIN_LVL")
-addHubToggle(156, "Quét Level (Bật = Chỉ mình / Tắt = Sảnh)", "ONLY_MY_ACCOUNT")
-addHubToggle(188, "Auto Re-Execute Khi Qua Màn", "AUTO_REEXECUTE", function(v)
+addHubToggle(68,  "Auto Skill Q/E (DQ Reborn)", "AUTO_SKILL_ASSIST")
+addHubToggle(100, "Chống Replay Sớm (Đợi Drop Boss)", "ANTI_EARLY_REPLAY")
+addHubToggle(132, "Tự Nâng Độ Khó & Map Theo Lvl", "AUTO_MAP_BY_MIN_LVL")
+addHubToggle(164, "Quét Level (Bật = Chỉ mình / Tắt = Sảnh)", "ONLY_MY_ACCOUNT")
+addHubToggle(196, "Auto Re-Execute Khi Qua Màn", "AUTO_REEXECUTE", function(v)
     if v then registerAutoReExecute() end
 end)
-addHubToggle(220, "Auto Re-Hop (Chuẩn DQ Reborn)", "AUTO_REHOP")
+addHubToggle(228, "Auto Re-Hop (Chuẩn DQ Reborn)", "AUTO_REHOP")
 
 local rehopBtn = Instance.new("TextButton", body)
 rehopBtn.Size = UDim2.new(1, 0, 0, 26)
-rehopBtn.Position = UDim2.new(0, 0, 0, 254)
+rehopBtn.Position = UDim2.new(0, 0, 0, 262)
 rehopBtn.BackgroundColor3 = Color3.fromRGB(95, 22, 30)
 rehopBtn.TextColor3 = Color3.fromRGB(255, 235, 235)
 rehopBtn.Font = Enum.Font.GothamBold
 rehopBtn.TextSize = 11
-rehopBtn.Text = "Re-Hop Sảnh DQ Reborn Ngay"
+rehopBtn.Text = "Về Sảnh DQ Reborn Ngay"
 Instance.new("UICorner", rehopBtn).CornerRadius = UDim.new(0, 6)
 rehopBtn.MouseButton1Click:Connect(function()
     CUSTOM.AUTO_REHOP = true
     triggerRehop("Bấm Re-Hop thủ công trên Hub")
 end)
 
--- Đồng bộ phím tắt đóng/mở (RightShift) nếu dùng ở chế độ dự phòng
 if not harvardWindow then
     UserInputService.InputBegan:Connect(function(inp, gpe)
         if not gpe and inp.KeyCode.Name == tostring(CFG.menuKey or "RightShift") then
@@ -987,37 +1068,37 @@ if not harvardWindow then
 end
 
 -- =====================================================================
--- 9. VÒNG LẶP CẬP NHẬT TRẠNG THÁI & VÒNG TRÒN HUD
+-- 9. VÒNG LẶP ĐỒNG BỘ ĐỘ KHÓ, MAP & KÍCH HOẠT VỀ SẢNH KHI LÊN ĐỘ KHÓ MỚI
 -- =====================================================================
 task.spawn(function()
     local lobbyStart = os.clock()
-    local lastSyncedMap = ""
+    local lastSyncedSig = ""
+
     while not RT.destroyed do
-        -- Nếu cửa sổ Harvard Labs được tạo trễ, tự động gắn vào ngay khi tìm thấy
         if not harvardWindow or not harvardWindow.Parent then
             local found = findHarvardHubMainFrame()
             if found then
                 harvardWindow = found
                 extFrame.Parent = harvardWindow
-                extFrame.Size = UDim2.new(0, 260, 1, 0)
+                extFrame.Size = UDim2.new(0, 265, 1, 0)
                 extFrame.Position = UDim2.new(1, 6, 0, 0)
             end
         end
 
         local minLvl, ownerName = getLowestAccountLevel()
         local bestMap, bestDiff, reqLvl = selectBestDungeonForLevel(minLvl)
-        local mapChanged = (bestMap ~= currentMap) or (bestDiff ~= currentDiff)
-        currentMinLvl, currentMinOwner, currentMap, currentDiff, currentReq = minLvl, ownerName, bestMap, bestDiff, reqLvl
+        currentMinLvl, currentMinOwner = minLvl, ownerName
+        targetMap, targetDiff, targetReq = bestMap, bestDiff, reqLvl
 
         if CUSTOM.AUTO_MAP_BY_MIN_LVL then
             local sig = bestMap .. "|" .. bestDiff
-            if sig ~= lastSyncedMap then
-                lastSyncedMap = sig
+            if sig ~= lastSyncedSig then
+                lastSyncedSig = sig
                 CFG.autoQueueMap        = bestMap
                 CFG.autoQueueDifficulty = bestDiff
-                if type(context.refreshAll) == "function" then
-                    pcall(context.refreshAll)
-                end
+                writeMapAndDiffToHarvardJson(bestMap, bestDiff)
+                if type(context.saveConfig) == "function" then pcall(context.saveConfig) end
+                if type(context.refreshAll) == "function" then pcall(context.refreshAll) end
             end
         end
 
@@ -1026,7 +1107,15 @@ task.spawn(function()
 
         if currentRunState == "LOBBY" then
             resolveRebornLobbyPlaceId()
-            statusStr = "Sảnh DQ Reborn -> Map: " .. tostring(currentMap)
+            needLeaveForUpgrade = false
+            -- Khi đang ở Sảnh, luôn cập nhật ENTERED_MAP & ENTERED_DIFF theo mục tiêu mới nhất sắp vào
+            if CUSTOM.ENTERED_MAP ~= bestMap or CUSTOM.ENTERED_DIFF ~= bestDiff then
+                CUSTOM.ENTERED_MAP  = bestMap
+                CUSTOM.ENTERED_DIFF = bestDiff
+                saveHubConfig()
+            end
+            statusStr = ("Sảnh -> Tạo: %s [%s]"):format(tostring(bestMap), tostring(bestDiff))
+
             if CUSTOM.AUTO_REHOP and CUSTOM.LOBBY_STUCK_TIMEOUT then
                 if os.clock() - lobbyStart > CUSTOM.LOBBY_STUCK_TIMEOUT then
                     triggerRehop("Kẹt ở Sảnh quá " .. tostring(CUSTOM.LOBBY_STUCK_TIMEOUT) .. "s")
@@ -1035,16 +1124,28 @@ task.spawn(function()
             end
         else
             lobbyStart = os.clock()
+            -- Kiểm tra xem Level mới của người chơi đã đủ nâng lên Độ khó mới (VD: Easy -> Medium) hoặc Map mới chưa!
+            needLeaveForUpgrade = CUSTOM.AUTO_MAP_BY_MIN_LVL
+                and ((bestMap ~= CUSTOM.ENTERED_MAP) or (bestDiff ~= CUSTOM.ENTERED_DIFF))
+
             if currentRunState == "LOOT_DONE" then
-                if CUSTOM.AUTO_MAP_BY_MIN_LVL and mapChanged then
-                    statusStr = "Đủ Lv lên Map mới -> Về Sảnh!"
-                    triggerRehop("Đủ Level chuyển sang Map mới: " .. tostring(bestMap))
+                if needLeaveForUpgrade then
+                    statusStr = ("Đủ Lv.%d lên [%s - %s] -> Về Sảnh!"):format(minLvl, tostring(bestMap), tostring(bestDiff))
+                    CUSTOM.AUTO_REHOP = true
+                    triggerRehop(("Nâng độ khó/map từ [%s - %s] lên [%s - %s]"):format(
+                        tostring(CUSTOM.ENTERED_MAP), tostring(CUSTOM.ENTERED_DIFF),
+                        tostring(bestMap), tostring(bestDiff)
+                    ))
                     break
                 else
-                    statusStr = "Đã lấy Drop -> Cho phép Replay!"
+                    statusStr = "Đã lấy Drop -> Đang Replay tiếp!"
                 end
             elseif currentRunState == "WAITING_DROP" then
-                statusStr = ("Boss chết! Chờ Drop (%.1fs)..."):format(currentDropTimer or 0)
+                if needLeaveForUpgrade then
+                    statusStr = ("Chờ Drop (%.1fs) -> Về Sảnh lên [%s]!"):format(currentDropTimer or 0, tostring(bestDiff))
+                else
+                    statusStr = ("Boss chết! Chờ Drop (%.1fs)..."):format(currentDropTimer or 0)
+                end
             elseif currentRunState == "FIGHTING_BOSS" then
                 statusStr = "Đang đánh Boss (Khóa Replay)"
             else
@@ -1052,17 +1153,18 @@ task.spawn(function()
             end
         end
 
-        infoBox.Text = ("Min Lvl: %d (%s) | LobbyID: %s\nMap: %s [%s - Req %d]\n%s"):format(
+        infoBox.Text = ("Min Lvl: %d (%s)\nĐang đi: %s [%s]\nMục tiêu: %s [%s - Req Lv.%d]\n%s"):format(
             currentMinLvl,
             tostring(currentMinOwner):sub(1, 10),
-            tostring(CUSTOM.REBORN_LOBBY_ID or game.PlaceId),
-            tostring(CFG.autoQueueMap),
-            tostring(CFG.autoQueueDifficulty),
-            currentReq,
+            tostring(CUSTOM.ENTERED_MAP or targetMap),
+            tostring(CUSTOM.ENTERED_DIFF or targetDiff),
+            tostring(targetMap),
+            tostring(targetDiff),
+            targetReq,
             statusStr
         )
 
-        task.wait(0.5)
+        task.wait(0.4)
     end
 end)
 
@@ -1111,8 +1213,8 @@ task.spawn(function()
     end
 end)
 
-print(("[Boost DQ Reborn] Đã gắn vào Hub gốc | Lobby PlaceId: %s | Min Lvl: %d -> %s (%s)")
-    :format(tostring(CUSTOM.REBORN_LOBBY_ID or game.PlaceId), currentMinLvl, tostring(currentMap), tostring(currentDiff)))
+print(("[Boost DQ Reborn] Đã nạp | Min Lvl: %d -> Mục tiêu: %s [%s - Req Lv.%d]")
+    :format(currentMinLvl, tostring(targetMap), tostring(targetDiff), targetReq))
 ]=====]
 
 local fullSelfFile = "local WRAPPER_SOURCE = [=====[" .. WRAPPER_SOURCE .. "]=====]\n"
