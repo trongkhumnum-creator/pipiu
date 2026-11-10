@@ -1,5 +1,5 @@
 -- =====================================================================
--- Harvard Labs v3.0 — DQ Reborn (In-Hub Integration + True MinLvl + AutoMap)
+-- Harvard Labs v3.0 — DQ Reborn (Strict Inner Rage/Focus Sync + Native In-Hub Card)
 -- =====================================================================
 
 local WRAPPER_SOURCE = [=====[
@@ -8,23 +8,24 @@ local ORIGINAL_URL = "https://raw.githubusercontent.com/trongkhumnum-creator/pip
 -- ============ Bảng Tùy Chỉnh (Custom Tuning) =========================
 local CUSTOM = {
     BOOST                 = 1.5,   -- Hệ số nhân tầm đánh / bán kính kỹ năng
-    DETECT_ONLY           = false, -- Để false để không chặn chiêu Q/E ở các map đầu
+    DETECT_ONLY           = false, -- Chặn đánh ngoài tầm
     DETECT_HOLD           = 0.35,  -- Thời gian giữ trạng thái đánh sau khi quái lệch tầm
     CACHE_HZ              = 15,    -- Tần suất quét mục tiêu mỗi giây
     DRAW_HUD              = true,  -- Hiển thị vòng tròn tầm đánh dưới chân
 
-    -- 1. Auto Skill cho Dungeon Quest Reborn
-    UNLOCK_ALL_SKILLS     = true,  -- Bỏ qua điều kiện đòi Buff Inner Focus/Rage của script gốc
-    AUTO_SKILL_ASSIST     = true,  -- Tự động kích hoạt Q / E & Vũ khí khi có quái trong tầm
+    -- 1. Kiểm soát chặt hiệu lực Buff (Inner Rage / Inner Focus - 5s Duration)
+    STRICT_BUFF_SYNC      = true,  -- Bắt buộc chỉ tung Skill sát thương khi Inner Rage / Inner Focus đang còn hiệu lực
+    BUFF_DURATION_WINDOW  = 4.85,  -- Thời gian hiệu lực an toàn (4.85s trên tổng 5.0s theo chuẩn Wiki & script gốc)
+    AUTO_SKILL_ASSIST     = true,  -- Trợ lực tự bật Buff trước rồi mới xả Skill sát thương khi có Buff
 
     -- 2. Chống Replay sớm & Bảo vệ Drop Boss
     ANTI_EARLY_REPLAY     = true,  -- Khóa Replay khi Boss chưa chết & chưa nhận xong Drop
     LOOT_WAIT_TIME        = 6,     -- Số giây chờ nhận Drop sau khi Boss chết
 
-    -- 3. Tự chọn Map & Độ khó theo Level thấp nhất (Mặc định quét TẤT CẢ acc)
+    -- 3. Tự chọn Map & Độ khó theo Level thấp nhất
     AUTO_MAP_BY_MIN_LVL   = true,  -- Tự động nâng Độ khó & Map theo acc có Level thấp nhất
-    ONLY_MY_ACCOUNT       = false, -- Luôn tắt mặc định để lấy Level của acc thấp nhất trong phòng/sảnh
-    WHITELIST_ACCS        = {},    -- Nếu muốn chỉ định tên acc phụ, điền vào đây VD: {"AccPhu1", "AccPhu2"}
+    ONLY_MY_ACCOUNT       = false, -- false = quét tất cả acc trong phòng/sảnh; true = chỉ tính acc này
+    WHITELIST_ACCS        = {},    -- Tùy chọn: Điền tên các acc phụ VD: {"AccPhu1", "AccPhu2"}
     ALLOW_GILDED_SKIES    = true,  -- Cho phép lên Gilded Skies ở Lv.190+
     FORCE_HARDCORE        = false,
     FORCE_PRIVATE         = true,
@@ -66,8 +67,9 @@ if type(isfile) == "function" and type(readfile) == "function" then
                     CUSTOM[k] = v
                 end
             end
-            if data.CFG_SCHEMA_VER ~= 3 then
-                CUSTOM.ONLY_MY_ACCOUNT = false
+            if data.CFG_SCHEMA_VER ~= 4 then
+                CUSTOM.ONLY_MY_ACCOUNT  = false
+                CUSTOM.STRICT_BUFF_SYNC = true
             end
         end
     end
@@ -75,7 +77,6 @@ end
 
 local contextRef = nil
 
--- Hàm lưu đồng bộ cả cấu hình mở rộng lẫn file release_<UserId>.json của Harvard Labs
 local function saveAllSettings(targetMap, targetDiff)
     if targetMap then CUSTOM.SAVED_MAP = targetMap end
     if targetDiff then CUSTOM.SAVED_DIFF = targetDiff end
@@ -88,11 +89,11 @@ local function saveAllSettings(targetMap, targetDiff)
             end
 
             writefile(HUB_CFG_FILE, HttpService:JSONEncode({
-                CFG_SCHEMA_VER      = 3,
+                CFG_SCHEMA_VER      = 4,
                 BOOST               = CUSTOM.BOOST,
                 DETECT_ONLY         = CUSTOM.DETECT_ONLY,
                 DRAW_HUD            = CUSTOM.DRAW_HUD,
-                UNLOCK_ALL_SKILLS   = CUSTOM.UNLOCK_ALL_SKILLS,
+                STRICT_BUFF_SYNC    = CUSTOM.STRICT_BUFF_SYNC,
                 AUTO_SKILL_ASSIST   = CUSTOM.AUTO_SKILL_ASSIST,
                 ANTI_EARLY_REPLAY   = CUSTOM.ANTI_EARLY_REPLAY,
                 LOOT_WAIT_TIME      = CUSTOM.LOOT_WAIT_TIME,
@@ -119,7 +120,6 @@ local function saveAllSettings(targetMap, targetDiff)
                 local ok, res = pcall(function() return HttpService:JSONDecode(readfile(cfgPath)) end)
                 if ok and type(res) == "table" then decoded = res end
             end
-            -- Tắt hoàn toàn việc giả Level 999 trên bảng tên & Leaderboard để đọc đúng Level của mọi acc phụ!
             decoded.streamerLevel       = false
             decoded.streamerOthers      = false
             decoded.streamerLeaderboard = false
@@ -139,26 +139,45 @@ local function saveAllSettings(targetMap, targetDiff)
 end
 
 -- =====================================================================
--- 1. NHẬN DIỆN CHÍNH XÁC SẢNH (LOBBY) VS TRONG DUNGEON (ĐÃ BỎ WORKSPACE.MAP)
+-- 1. DỌN SẠCH MỌI HUB NGOÀI CŨ (CHỈ DÙNG DUY NHẤT 1 HUB HARVARD LABS)
+-- =====================================================================
+local function purgeAllExternalHubs()
+    local roots = {}
+    if type(gethui) == "function" then pcall(function() roots[#roots + 1] = gethui() end) end
+    roots[#roots + 1] = CoreGui
+    roots[#roots + 1] = LocalPlayer:FindFirstChild("PlayerGui")
+
+    for _, r in ipairs(roots) do
+        if r then
+            for _, guiName in ipairs({ "HLBoostMiniHub", "HLBoostIntegrated" }) do
+                local old = r:FindFirstChild(guiName)
+                if old then pcall(function() old:Destroy() end) end
+            end
+            for _, desc in ipairs(r:GetDescendants()) do
+                if desc.Name == "HLRebornIntegratedPanel"
+                    or desc.Name == "HLInHubToggleBtn"
+                    or desc.Name == "HLInHubDrawer"
+                then
+                    pcall(function() desc:Destroy() end)
+                end
+            end
+        end
+    end
+end
+
+purgeAllExternalHubs()
+
+-- =====================================================================
+-- 2. NHẬN DIỆN SẢNH (LOBBY) VS TRONG DUNGEON & PLACE ID DQ REBORN
 -- =====================================================================
 local function isInDungeon()
-    -- Nếu có thư mục Lobby trong Workspace -> Chắc chắn 100% đang ở Sảnh!
-    if workspace:FindFirstChild("Lobby") ~= nil then
-        return false
-    end
-    -- Nếu có thư mục dungeon -> Chắc chắn 100% đang ở trong Dungeon!
-    if workspace:FindFirstChild("dungeon") ~= nil then
-        return true
-    end
-    -- Nếu đã biết PlaceId của Sảnh:
+    if workspace:FindFirstChild("Lobby") ~= nil then return false end
+    if workspace:FindFirstChild("dungeon") ~= nil then return true end
     if type(CUSTOM.REBORN_LOBBY_ID) == "number" and CUSTOM.REBORN_LOBBY_ID > 0 then
         return game.PlaceId ~= CUSTOM.REBORN_LOBBY_ID
     end
-    -- Kiểm tra xem trong workspace.enemies có quái thật có Humanoid đang sống không
     local ef = workspace:FindFirstChild("enemies")
-    if ef and #ef:GetChildren() > 0 then
-        return true
-    end
+    if ef and #ef:GetChildren() > 0 then return true end
     return false
 end
 
@@ -205,7 +224,7 @@ end
 task.spawn(resolveRebornLobbyPlaceId)
 
 -- =====================================================================
--- 2. BẢNG TIER MAP & ĐỌC LEVEL THẬT CỦA MỌI ACCOUNT TRONG SẢNH / PHÒNG
+-- 3. BẢNG TIER MAP & ĐỌC LEVEL THẬT CỦA CÁC ACCOUNT
 -- =====================================================================
 local DUNGEON_TIERS = {
     -- Desert Temple (5 Độ khó: 1, 6, 12, 20, 27)
@@ -261,7 +280,6 @@ local function extractValidLevel(raw)
     end
     if type(raw) == "string" then
         local clean = raw:gsub(",", "")
-        -- Ưu tiên chuỗi có chữ Lv / Level phía trước
         local m = clean:match("[Ll][Vv][Ll]?%.?%s*:?%s*(%d+)")
             or clean:match("[Ll]evel%s*:?%s*(%d+)")
             or clean:match("^%s*(%d+)%s*$")
@@ -276,7 +294,6 @@ end
 local function readPlayerLevelRaw(plr)
     if not plr then return nil end
 
-    -- 1. Đọc từ mọi ValueObject bên trong leaderstats hoặc trực tiếp dưới Player
     local containers = {
         plr:FindFirstChild("leaderstats"),
         plr:FindFirstChild("Data"),
@@ -302,7 +319,6 @@ local function readPlayerLevelRaw(plr)
         end
     end
 
-    -- 2. Đọc từ Attributes của Player và Character
     for k, v in pairs(plr:GetAttributes()) do
         local klow = string.lower(k)
         if klow == "level" or klow == "lvl" then
@@ -314,7 +330,6 @@ local function readPlayerLevelRaw(plr)
         end
     end
 
-    -- 3. Đọc từ BillboardGui trên đầu nhân vật trong Workspace (Trong DQ, BillboardGui chứa TextLabel tên là "level")
     local char = plr.Character or workspace:FindFirstChild(plr.Name)
     if char then
         for _, desc in ipairs(char:GetDescendants()) do
@@ -327,7 +342,6 @@ local function readPlayerLevelRaw(plr)
                         return n
                     end
                 else
-                    -- Nếu TextLabel bất kỳ trên BillboardGui có chữ "Level X" hoặc "Lv. X"
                     local txt = desc.Text:gsub(",", "")
                     local m = txt:match("[Ll][Vv][Ll]?%.?%s*:?%s*(%d+)") or txt:match("[Ll]evel%s*:?%s*(%d+)")
                     if m then
@@ -345,7 +359,6 @@ local function readPlayerLevelRaw(plr)
     return realLevelCache[plr.UserId]
 end
 
--- Quét và lưu ngay Level thật của toàn bộ người chơi trước khi Harvard Labs kịp chạy!
 for _, plr in ipairs(Players:GetPlayers()) do
     readPlayerLevelRaw(plr)
 end
@@ -403,13 +416,12 @@ local function selectBestDungeonForLevel(lvl)
     return best.map, best.diff, best.req, best.idx
 end
 
--- Ghi đè tắt StreamerLevel/StreamerOthers/StreamerLeaderboard trong file JSON TRƯỚC KHI gọi chunk()!
 local initMinLvl, initOwner, initHostLvl = getLowestAccountLevel()
 local initMap, initDiff, initReq, initTierIdx = selectBestDungeonForLevel(initMinLvl)
 saveAllSettings(initMap, initDiff)
 
 -- =====================================================================
--- 3. TẢI VÀ KHỞI CHẠY HARVARD LABS GỐC (VÁ TRỰC TIẾP TRONG SOURCE)
+-- 4. TẢI VÀ KHỞI CHẠY HARVARD LABS GỐC
 -- =====================================================================
 local function fetchURL(url)
     if type(httpget) == "function" then
@@ -435,7 +447,6 @@ if not source then
     error("[Boost] Không thể tải script gốc. Hãy kiểm tra lại ORIGINAL_URL hoặc quyền HTTP của Executor.")
 end
 
--- Ngăn script gốc ghi đè Level của các acc khác thành 999 và đặt sẵn Map mục tiêu ngay từ lúc khởi tạo
 source = source:gsub("streamerLevel = true", "streamerLevel = false")
 source = source:gsub("streamerOthers = true", "streamerOthers = false")
 source = source:gsub("streamerLeaderboard = true", "streamerLeaderboard = false")
@@ -472,7 +483,7 @@ local CFG, RT = context.CFG, context.RT
 _G = _G or {}; getgenv = getgenv or function() return _G end
 
 -- =====================================================================
--- 4. ÁP DỤNG BOOST & MỞ KHÓA AUTO SKILL CHO DQ REBORN
+-- 5. CẤU HÌNH BOOST & ĐỒNG BỘ CHẶT VỚI SKILL BUFF (INNER RAGE / FOCUS)
 -- =====================================================================
 if type(context.autoClass) == "function" then pcall(context.autoClass, true) end
 if type(context.applyClassProfile) == "function" then
@@ -513,18 +524,21 @@ local function applySkillAndBoostSettings()
     CFG.autoAttack    = true
     RT.farmEnabled    = true
 
-    if CUSTOM.UNLOCK_ALL_SKILLS then
-        CFG.mobAttackNeedsBuff   = false
-        CFG.attackNeedsBuffUp    = false
-        CFG.buffHolderCheck      = false
-        CFG.buffSpeedCheck       = false
-        CFG.attackOnlyWithSpeed  = false
-        CFG.firstCastWholeStrict = false
-        CFG.groupFirstWhole      = false
-        CFG.firstHitWhole        = false
-        CFG.fireOnFullCover      = false
-        CFG.strikeWaitReady      = false
-        CFG.groupArriveReady     = false
+    -- Thông số chuẩn của Inner Rage / Inner Focus trên Wiki & trong Harvard Labs:
+    -- Thời gian hiệu lực (Duration): 5.0 giây | Hồi chiêu (Cooldown): 6.0 giây
+    CFG.buffDuration  = 5
+    CFG.buffCooldown  = 6
+
+    if CUSTOM.STRICT_BUFF_SYNC then
+        -- Bật toàn bộ cờ kiểm tra Buff của Harvard Labs để Carry chỉ xả chiêu khi có Inner Rage / Inner Focus!
+        CFG.mobAttackNeedsBuff  = true
+        CFG.attackNeedsBuffUp   = true
+        CFG.buffHolderCheck     = true
+        CFG.buffHolderGrace     = 0.35
+    else
+        CFG.mobAttackNeedsBuff  = false
+        CFG.attackNeedsBuffUp   = false
+        CFG.buffHolderCheck     = false
     end
 
     for _, k in ipairs(KEYS) do
@@ -582,7 +596,146 @@ if type(context.loadConfig) == "function" then
 end
 
 -- =====================================================================
--- 5. QUÉT QUÁI MỌI MAP & TRỢ LỰC TUNG CHIÊU Q/E TRONG DQ REBORN
+-- 6. BỘ KIỂM TRA HIỆU LỰC "INNER RAGE" / "INNER FOCUS" (5 GIÂY) CHUẨN XÁC
+-- =====================================================================
+local BUFF_SPELL_NAMES = {
+    ["inner focus"]          = true,
+    ["inner rage"]           = true,
+    ["enhanced inner focus"] = true,
+    ["enhanced inner rage"]  = true,
+}
+
+local lastBuffActivatedAt = -math.huge
+
+-- Kiểm tra xem slot ("Q" hoặc "E" hoặc 1/2) có phải là kỹ năng Buff Inner Rage / Inner Focus không
+local function isSlotBuffSkill(slot)
+    if context.isBuffSlot then
+        local ok, res = pcall(context.isBuffSlot, slot)
+        if ok and res == true then return true end
+    end
+    local slotStr = string.upper(tostring(slot or ""))
+    -- Kiểm tra trong Backpack / Character / PlayerGui
+    local char = LocalPlayer.Character
+    local bp   = LocalPlayer:FindFirstChild("Backpack")
+    for _, container in ipairs({ char, bp }) do
+        if container then
+            for _, item in ipairs(container:GetChildren()) do
+                local itemName = string.lower(item.Name)
+                if BUFF_SPELL_NAMES[itemName] then
+                    local itemSlot = item:GetAttribute("Slot") or item:GetAttribute("Key") or (item:FindFirstChild("slot") and item.slot.Value)
+                    if itemSlot and string.upper(tostring(itemSlot)) == slotStr then
+                        return true
+                    end
+                end
+            end
+        end
+    end
+    return false
+end
+
+-- Kiểm tra nhân vật có trang bị kỹ năng Inner Rage / Inner Focus ở Q hoặc E không
+local function detectEquippedBuffKey()
+    if isSlotBuffSkill("Q") or isSlotBuffSkill(1) then return Enum.KeyCode.Q, "Q" end
+    if isSlotBuffSkill("E") or isSlotBuffSkill(2) then return Enum.KeyCode.E, "E" end
+
+    -- Quét trong Backpack, Character và PlayerGui để tìm xem nhân vật có sở hữu Inner Rage / Inner Focus đang lắp không
+    local char = LocalPlayer.Character
+    local bp   = LocalPlayer:FindFirstChild("Backpack")
+    for _, container in ipairs({ char, bp }) do
+        if container then
+            for _, item in ipairs(container:GetChildren()) do
+                if BUFF_SPELL_NAMES[string.lower(item.Name)] then
+                    -- Trong DQ, hầu hết người chơi đặt Inner Focus / Inner Rage ở E hoặc Q; thử kiểm tra context
+                    if context.buffSlot then
+                        local bs = string.upper(tostring(context.buffSlot))
+                        if bs == "Q" then return Enum.KeyCode.Q, "Q" end
+                        if bs == "E" then return Enum.KeyCode.E, "E" end
+                    end
+                    return Enum.KeyCode.E, "E"
+                end
+            end
+        end
+    end
+    return nil, nil
+end
+
+-- Kiểm tra trực tiếp hiệu ứng Particle "inner focus particle holder" / "inner rage particle holder" trên nhân vật
+local function hasBuffParticleOnCharacter()
+    local char = LocalPlayer.Character
+    if not char then return false end
+
+    for _, desc in ipairs(char:GetDescendants()) do
+        local n = string.lower(desc.Name)
+        if n == "inner focus particle holder"
+            or n == "inner rage particle holder"
+            or n:find("inner focus", 1, true)
+            or n:find("inner rage", 1, true)
+        then
+            if desc:IsA("ParticleEmitter") then
+                if desc.Enabled then return true end
+            else
+                return true
+            end
+        end
+    end
+
+    -- Kiểm tra thêm trong Workspace nếu game đặt holder dưới Workspace gắn Weld vào HumanoidRootPart
+    for _, child in ipairs(workspace:GetChildren()) do
+        local n = string.lower(child.Name)
+        if n == "inner focus particle holder" or n == "inner rage particle holder" then
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            if hrp and child:IsA("BasePart") and (child.Position - hrp.Position).Magnitude < 12 then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+-- Theo dõi tự động khi Particle xuất hiện trên Character để đồng bộ bộ đếm 5.0 giây
+local function hookCharacterBuffTracker(char)
+    if not char then return end
+    char.DescendantAdded:Connect(function(desc)
+        local n = string.lower(desc.Name)
+        if n:find("inner focus", 1, true) or n:find("inner rage", 1, true) then
+            lastBuffActivatedAt = os.clock()
+        end
+    end)
+end
+
+if LocalPlayer.Character then hookCharacterBuffTracker(LocalPlayer.Character) end
+LocalPlayer.CharacterAdded:Connect(hookCharacterBuffTracker)
+
+-- Hàm quyết định: Buff Inner Rage / Inner Focus có đang còn hiệu lực hay không?
+local function isDamageBuffActive()
+    -- 1. Nếu Particle "inner focus particle holder" / "inner rage particle holder" đang hiện trên người -> Chắc chắn đang có Buff!
+    if hasBuffParticleOnCharacter() then
+        if os.clock() - lastBuffActivatedAt > 5.2 then
+            lastBuffActivatedAt = os.clock()
+        end
+        return true
+    end
+
+    -- 2. Nếu nằm trong cửa sổ hiệu lực 4.85s tính từ lúc kích hoạt Buff
+    if (os.clock() - lastBuffActivatedAt) <= CUSTOM.BUFF_DURATION_WINDOW then
+        return true
+    end
+
+    -- 3. Kiểm tra thêm biến thời gian Buff nội bộ của Harvard Labs (nếu có)
+    if type(RT.buffUntil) == "number" and os.clock() < RT.buffUntil then
+        return true
+    end
+    if type(context.buffUp) == "function" then
+        local ok, up = pcall(context.buffUp)
+        if ok and up == true then return true end
+    end
+
+    return false
+end
+
+-- =====================================================================
+-- 7. QUÉT QUÁI & CHẶN SKILL SÁT THƯƠNG KHI CHƯA CÓ BUFF (GATE)
 -- =====================================================================
 local cacheAt, cacheOK, cacheTgt = 0, false, nil
 local lastHitAt, lastTgt = 0, nil
@@ -659,59 +812,93 @@ local function detection()
     return ok, t
 end
 
+-- Khóa chặt gsSlotReady và slotReady:
+-- + Nếu là chiêu Buff (Inner Rage / Inner Focus): Cho phép tung ngay lập tức!
+-- + Nếu là chiêu gây sát thương: BẮT BUỘC phải đang có hiệu lực Buff (isDamageBuffActive() == true) mới cho phép tung chiêu!
 local function gate(fn)
     if type(fn) ~= "function" then return fn end
     return function(slot, ...)
-        if CUSTOM.UNLOCK_ALL_SKILLS and not CUSTOM.DETECT_ONLY then
-            return true
+        -- Nếu là slot Buff (Inner Rage / Inner Focus) -> Luôn ưu tiên cho phép dùng
+        if isSlotBuffSkill(slot) then
+            return fn(slot, ...)
         end
+
+        -- Nếu bật STRICT_BUFF_SYNC -> Chặn hoàn toàn việc tung chiêu sát thương khi chưa có hiệu lực Buff!
+        if CUSTOM.STRICT_BUFF_SYNC then
+            local buffKey, _ = detectEquippedBuffKey()
+            if buffKey ~= nil and not isDamageBuffActive() then
+                return false
+            end
+        end
+
         if not fn(slot, ...) then return false end
-        if not CUSTOM.DETECT_ONLY then return true end
-        if context.isBuffSlot and context.isBuffSlot(slot) then return true end
-        return (detection())
+        if CUSTOM.DETECT_ONLY then
+            return (detection())
+        end
+        return true
     end
 end
 if type(context.gsSlotReady) == "function" then context.gsSlotReady = gate(context.gsSlotReady) end
 if type(context.slotReady) == "function" then context.slotReady = gate(context.slotReady) end
 
+-- Luồng trợ lực Auto-Skill thông minh tuân thủ nghiêm ngặt hiệu lực Buff 5 giây:
+-- 1) Nếu chưa có Buff -> CHỈ bấm phím Buff (Inner Rage / Inner Focus) và đợi hiệu ứng Buff lên.
+-- 2) Khi và chỉ khi Buff đang còn hiệu lực (trong 5s) -> Mới bấm phím Skill gây sát thương!
 task.spawn(function()
     while not RT.destroyed do
-        task.wait(0.22)
+        task.wait(0.18)
         if CUSTOM.AUTO_SKILL_ASSIST and RT.farmEnabled and isInDungeon() then
             local hasTarget, tgt = detection()
             if hasTarget and tgt then
-                local now = os.clock()
-                if CFG.autoQ and (now - (tonumber(RT.lastQ) or 0) > 0.7) then
-                    pcall(function()
-                        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Q, false, game)
-                        task.wait(0.02)
-                        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Q, false, game)
-                    end)
-                end
-                if CFG.autoE and (now - (tonumber(RT.lastE) or 0) > 0.7) then
-                    pcall(function()
-                        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.E, false, game)
-                        task.wait(0.02)
-                        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
-                    end)
-                end
-                pcall(function()
-                    local char = LocalPlayer.Character
-                    if char then
-                        for _, child in ipairs(char:GetChildren()) do
-                            if child:IsA("Tool") then
-                                child:Activate()
-                            end
+                local buffKeyCode, buffSlotStr = detectEquippedBuffKey()
+                local buffActive = isDamageBuffActive()
+
+                if CUSTOM.STRICT_BUFF_SYNC and buffKeyCode then
+                    if not buffActive then
+                        -- Chưa có hiệu lực Buff -> Chỉ kích hoạt phím Buff (TUYỆT ĐỐI KHÔNG bấm phím Skill sát thương)
+                        pcall(function()
+                            VirtualInputManager:SendKeyEvent(true, buffKeyCode, false, game)
+                            task.wait(0.02)
+                            VirtualInputManager:SendKeyEvent(false, buffKeyCode, false, game)
+                        end)
+                    else
+                        -- Đang trong 5 giây hiệu lực của Inner Rage / Inner Focus -> Xả phím Skill gây sát thương!
+                        local atkKeyCode = (buffSlotStr == "Q") and Enum.KeyCode.E or Enum.KeyCode.Q
+                        local now = os.clock()
+                        local lastAtk = (atkKeyCode == Enum.KeyCode.Q) and (tonumber(RT.lastQ) or 0) or (tonumber(RT.lastE) or 0)
+                        if now - lastAtk > 0.55 then
+                            pcall(function()
+                                VirtualInputManager:SendKeyEvent(true, atkKeyCode, false, game)
+                                task.wait(0.02)
+                                VirtualInputManager:SendKeyEvent(false, atkKeyCode, false, game)
+                            end)
                         end
                     end
-                end)
+                elseif not CUSTOM.STRICT_BUFF_SYNC then
+                    -- Khi người dùng tắt yêu cầu chờ Buff (hoặc acc phụ cấp thấp chưa có Inner Rage/Focus)
+                    local now = os.clock()
+                    if CFG.autoQ and (now - (tonumber(RT.lastQ) or 0) > 0.7) then
+                        pcall(function()
+                            VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Q, false, game)
+                            task.wait(0.02)
+                            VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Q, false, game)
+                        end)
+                    end
+                    if CFG.autoE and (now - (tonumber(RT.lastE) or 0) > 0.7) then
+                        pcall(function()
+                            VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.E, false, game)
+                            task.wait(0.02)
+                            VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+                        end)
+                    end
+                end
             end
         end
     end
 end)
 
 -- =====================================================================
--- 6. KIỂM SOÁT BOSS DROP & TỰ TẠO PHÒNG CHUYỂN MAP Ở SẢNH
+-- 8. KIỂM SOÁT BOSS DROP & TỰ TẠO PHÒNG CHUYỂN MAP Ở SẢNH
 -- =====================================================================
 local bossConfirmedAliveOnce = false
 local bossDeadAt             = nil
@@ -821,6 +1008,12 @@ hbConn = RunService.Heartbeat:Connect(function()
     CFG.modDetect           = false
     CFG.modKick             = false
 
+    if CUSTOM.STRICT_BUFF_SYNC then
+        CFG.mobAttackNeedsBuff = true
+        CFG.attackNeedsBuffUp  = true
+        CFG.buffHolderCheck    = true
+    end
+
     if CUSTOM.AUTO_MAP_BY_MIN_LVL then
         CFG.autoQueueMap        = targetMap
         CFG.autoQueueDifficulty = targetDiff
@@ -831,7 +1024,6 @@ hbConn = RunService.Heartbeat:Connect(function()
     end
 
     if not isInDungeon() then
-        -- Khi ở Sảnh: BẬT autoQueue để Harvard Labs tự động tạo phòng chuyển Map!
         CFG.autoQueue       = true
         CFG.autoQueueReplay = false
     else
@@ -849,7 +1041,7 @@ hbConn = RunService.Heartbeat:Connect(function()
 end)
 
 -- =====================================================================
--- 7. AUTO RE-EXECUTE, AUTO SAVE & RE-HOP
+-- 9. AUTO RE-EXECUTE, AUTO SAVE & RE-HOP
 -- =====================================================================
 local function registerAutoReExecute()
     if not CUSTOM.AUTO_REEXECUTE then return false end
@@ -938,34 +1130,10 @@ TeleportService.TeleportInitFailed:Connect(function(_, res, msg)
 end)
 
 -- =====================================================================
--- 8. NHÚNG TRỰC TIẾP VÀO BÊN TRONG CỬA SỐ HUB CỦA HARVARD LABS
+-- 10. TÍCH HỢP MỤC CÀI ĐẶT NẰM TRONG DANH SÁCH CỦA HARVARD LABS HUB DUY NHẤT
 -- =====================================================================
--- Xóa hoàn toàn mọi bảng Hub ngoài cũ nếu còn sót lại
-local guiParent = (type(gethui) == "function" and gethui()) or CoreGui or LocalPlayer:WaitForChild("PlayerGui")
-pcall(function()
-    for _, name in ipairs({ "HLBoostMiniHub", "HLBoostIntegrated" }) do
-        local old = guiParent:FindFirstChild(name)
-        if old then old:Destroy() end
-    end
-end)
-
-local function findHarvardHubWindow()
-    if type(context.UI) == "table" then
-        for _, v in pairs(context.UI) do
-            if typeof(v) == "Instance" then
-                if v:IsA("Frame") and v.AbsoluteSize.X > 280 and v.AbsoluteSize.Y > 200 then
-                    return v
-                elseif v:IsA("ScreenGui") then
-                    for _, child in ipairs(v:GetChildren()) do
-                        if child:IsA("Frame") and child.AbsoluteSize.X > 280 and child.AbsoluteSize.Y > 200 then
-                            return child
-                        end
-                    end
-                end
-            end
-        end
-    end
-
+-- Tìm đúng ScrollingFrame nội dung chính bên phải của cửa sổ Harvard Labs (nơi chứa các mục như "Auto sell", "Rarities to sell")
+local function findHarvardContentScrollingFrame()
     local roots = {}
     if type(gethui) == "function" then pcall(function() roots[#roots + 1] = gethui() end) end
     roots[#roots + 1] = CoreGui
@@ -975,17 +1143,30 @@ local function findHarvardHubWindow()
         if root then
             for _, gui in ipairs(root:GetChildren()) do
                 if gui:IsA("ScreenGui") then
+                    local isHarvardGui = false
                     for _, desc in ipairs(gui:GetDescendants()) do
                         if desc:IsA("TextLabel") then
                             local t = string.lower(desc.Text or "")
-                            if t:find("harvard") or t:find("v3.0") or t:find("c84b") then
-                                local topFrame = desc:FindFirstAncestorWhichIsA("Frame")
-                                while topFrame and topFrame.Parent and topFrame.Parent:IsA("Frame") do
-                                    topFrame = topFrame.Parent
-                                end
-                                if topFrame then return topFrame end
+                            if t == "harvard labs" or t:find("v3.0 c84b", 1, true) then
+                                isHarvardGui = true
+                                break
                             end
                         end
+                    end
+                    if isHarvardGui then
+                        -- Tìm ScrollingFrame lớn nhất bên phải chứa các section cards
+                        local bestScroll = nil
+                        local bestArea = 0
+                        for _, desc in ipairs(gui:GetDescendants()) do
+                            if desc:IsA("ScrollingFrame") then
+                                local area = desc.AbsoluteSize.X * desc.AbsoluteSize.Y
+                                if desc.AbsoluteSize.X > 350 and area > bestArea then
+                                    bestArea = area
+                                    bestScroll = desc
+                                end
+                            end
+                        end
+                        if bestScroll then return bestScroll end
                     end
                 end
             end
@@ -994,146 +1175,186 @@ local function findHarvardHubWindow()
     return nil
 end
 
-local infoBoxLabel = nil
-local embeddedReady = false
+local nativeStatusLabel = nil
+local nativeCardInjected = false
 
-local function injectIntoHarvardHub(hWin)
-    if not hWin or embeddedReady then return end
-    embeddedReady = true
+local function injectNativeSectionCard(scrollContainer)
+    if not scrollContainer or nativeCardInjected then return end
+    nativeCardInjected = true
 
-    -- Dọn các phần tử cũ bên trong cửa sổ Harvard nếu chạy lại
-    for _, oldName in ipairs({ "HLRebornIntegratedPanel", "HLInHubToggleBtn", "HLInHubDrawer", "HLInHubStatusBanner" }) do
-        local old = hWin:FindFirstChild(oldName, true)
-        if old then old:Destroy() end
-    end
+    local oldCard = scrollContainer:FindFirstChild("HLNativeBoostSection")
+    if oldCard then oldCard:Destroy() end
 
-    -- 1. Tạo Nút Bật/Tắt "[⚙ AutoMap & ReExec]" nằm ngay trên thanh Topbar của cửa sổ Harvard Labs
-    local toggleTabBtn = Instance.new("TextButton")
-    toggleTabBtn.Name = "HLInHubToggleBtn"
-    toggleTabBtn.Size = UDim2.new(0, 138, 0, 22)
-    toggleTabBtn.Position = UDim2.new(1, -185, 0, 6)
-    toggleTabBtn.BackgroundColor3 = Color3.fromRGB(145, 24, 34)
-    toggleTabBtn.TextColor3 = Color3.fromRGB(255, 240, 240)
-    toggleTabBtn.Font = Enum.Font.GothamBold
-    toggleTabBtn.TextSize = 11
-    toggleTabBtn.Text = "⚙ AutoMap / ReExec"
-    toggleTabBtn.ZIndex = 50
-    toggleTabBtn.Parent = hWin
-    Instance.new("UICorner", toggleTabBtn).CornerRadius = UDim.new(0, 5)
+    local expandedHeight = 326
+    local collapsedHeight = 36
+    local isCollapsed = false
 
-    local btnStroke = Instance.new("UIStroke", toggleTabBtn)
-    btnStroke.Color = Color3.fromRGB(220, 60, 70)
-    btnStroke.Thickness = 1
+    -- Khung Section Card đồng bộ 100% thiết kế với mục "Auto sell" của Harvard Labs
+    local sectionCard = Instance.new("Frame")
+    sectionCard.Name = "HLNativeBoostSection"
+    sectionCard.Size = UDim2.new(1, 0, 0, expandedHeight)
+    sectionCard.BackgroundColor3 = Color3.fromRGB(20, 20, 23)
+    sectionCard.BorderSizePixel = 0
+    sectionCard.LayoutOrder = -9999 -- Nằm ngay đầu danh sách bên trong Harvard Labs Hub
+    sectionCard.Parent = scrollContainer
+    Instance.new("UICorner", sectionCard).CornerRadius = UDim.new(0, 6)
 
-    -- 2. Tạo Trang Cài Đặt (Drawer) nằm GỌN BÊN TRONG lòng cửa sổ Harvard Labs (Bấm nút trên Topbar để bật/tắt)
-    local inHubPage = Instance.new("Frame")
-    inHubPage.Name = "HLInHubDrawer"
-    inHubPage.Size = UDim2.new(1, -20, 1, -44)
-    inHubPage.Position = UDim2.new(0, 10, 0, 34)
-    inHubPage.BackgroundColor3 = Color3.fromRGB(20, 12, 14)
-    inHubPage.BorderSizePixel = 0
-    inHubPage.Visible = false -- Ẩn mặc định, bấm nút "⚙ AutoMap / ReExec" ngay trên Hub Harvard để mở!
-    inHubPage.ZIndex = 45
-    inHubPage.Parent = hWin
-    Instance.new("UICorner", inHubPage).CornerRadius = UDim.new(0, 8)
+    local cardStroke = Instance.new("UIStroke", sectionCard)
+    cardStroke.Color = Color3.fromRGB(40, 40, 46)
+    cardStroke.Thickness = 1
 
-    local pageStroke = Instance.new("UIStroke", inHubPage)
-    pageStroke.Color = Color3.fromRGB(175, 28, 38)
-    pageStroke.Thickness = 1.5
+    -- Thanh tiêu đề của mục (Có thể bấm để Thu gọn / Mở rộng giống hệt Harvard Labs)
+    local headerBtn = Instance.new("TextButton", sectionCard)
+    headerBtn.Size = UDim2.new(1, 0, 0, 34)
+    headerBtn.BackgroundTransparency = 1
+    headerBtn.Text = ""
+    headerBtn.AutoButtonColor = false
 
-    local pageHeader = Instance.new("TextLabel", inHubPage)
-    pageHeader.Size = UDim2.new(1, -20, 0, 26)
-    pageHeader.Position = UDim2.new(0, 10, 0, 6)
-    pageHeader.BackgroundTransparency = 1
-    pageHeader.Text = "CÀI ĐẶT MỞ RỘNG DQ REBORN (NẰM TRONG HARVARD HUB)"
-    pageHeader.TextColor3 = Color3.fromRGB(255, 210, 210)
-    pageHeader.Font = Enum.Font.GothamBold
-    pageHeader.TextSize = 11
-    pageHeader.TextXAlignment = Enum.TextXAlignment.Left
-    pageHeader.ZIndex = 46
+    local headerTitle = Instance.new("TextLabel", headerBtn)
+    headerTitle.Size = UDim2.new(1, -50, 1, 0)
+    headerTitle.Position = UDim2.new(0, 14, 0, 0)
+    headerTitle.BackgroundTransparency = 1
+    headerTitle.Text = "AutoMap, Re-Exec & Buff Guard (DQ Reborn)"
+    headerTitle.TextColor3 = Color3.fromRGB(235, 65, 45)
+    headerTitle.Font = Enum.Font.GothamBold
+    headerTitle.TextSize = 12
+    headerTitle.TextXAlignment = Enum.TextXAlignment.Left
 
-    local scroll = Instance.new("ScrollingFrame", inHubPage)
-    scroll.Size = UDim2.new(1, -16, 1, -38)
-    scroll.Position = UDim2.new(0, 8, 0, 32)
-    scroll.BackgroundTransparency = 1
-    scroll.BorderSizePixel = 0
-    scroll.ScrollBarThickness = 3
-    scroll.CanvasSize = UDim2.new(0, 0, 0, 295)
-    scroll.ZIndex = 46
+    local arrowLabel = Instance.new("TextLabel", headerBtn)
+    arrowLabel.Size = UDim2.new(0, 24, 1, 0)
+    arrowLabel.Position = UDim2.new(1, -34, 0, 0)
+    arrowLabel.BackgroundTransparency = 1
+    arrowLabel.Text = "∧"
+    arrowLabel.TextColor3 = Color3.fromRGB(235, 65, 45)
+    arrowLabel.Font = Enum.Font.GothamBold
+    arrowLabel.TextSize = 12
 
-    local statusBox = Instance.new("TextLabel", scroll)
-    statusBox.Size = UDim2.new(1, 0, 0, 60)
-    statusBox.Position = UDim2.new(0, 0, 0, 0)
-    statusBox.BackgroundColor3 = Color3.fromRGB(30, 18, 22)
-    statusBox.TextColor3 = Color3.fromRGB(130, 245, 170)
-    statusBox.Font = Enum.Font.GothamSemibold
-    statusBox.TextSize = 11
-    statusBox.TextWrapped = true
-    statusBox.Text = "Đang đọc Level các tài khoản..."
-    statusBox.ZIndex = 47
-    Instance.new("UICorner", statusBox).CornerRadius = UDim.new(0, 6)
-    infoBoxLabel = statusBox
+    -- Đường kẻ đỏ mảnh dưới tiêu đề giống hệt giao diện gốc
+    local redLine = Instance.new("Frame", sectionCard)
+    redLine.Size = UDim2.new(1, -28, 0, 1)
+    redLine.Position = UDim2.new(0, 14, 0, 34)
+    redLine.BackgroundColor3 = Color3.fromRGB(165, 38, 30)
+    redLine.BorderSizePixel = 0
 
-    local function createInHubSwitch(yPos, title, key, onChange)
-        local row = Instance.new("TextButton", scroll)
-        row.Size = UDim2.new(1, 0, 0, 30)
-        row.Position = UDim2.new(0, 0, 0, yPos)
-        row.BorderSizePixel = 0
-        row.Font = Enum.Font.GothamSemibold
-        row.TextSize = 11
-        row.ZIndex = 47
-        Instance.new("UICorner", row).CornerRadius = UDim.new(0, 6)
+    local bodyContainer = Instance.new("Frame", sectionCard)
+    bodyContainer.Size = UDim2.new(1, -28, 1, -42)
+    bodyContainer.Position = UDim2.new(0, 14, 0, 40)
+    bodyContainer.BackgroundTransparency = 1
 
-        local function updateRow()
-            local active = CUSTOM[key]
-            row.Text = ("  %s :  %s"):format(title, active and "ĐANG BẬT (ON)" or "ĐANG TẮT (OFF)")
-            row.BackgroundColor3 = active and Color3.fromRGB(135, 25, 35) or Color3.fromRGB(36, 22, 26)
-            row.TextColor3 = active and Color3.fromRGB(255, 245, 245) or Color3.fromRGB(180, 160, 165)
+    -- Dòng mô tả trạng thái trực tiếp (Hiển thị Min Level, Map mục tiêu và Trạng thái Buff Inner Rage/Focus)
+    local descLabel = Instance.new("TextLabel", bodyContainer)
+    descLabel.Size = UDim2.new(1, 0, 0, 34)
+    descLabel.Position = UDim2.new(0, 0, 0, 0)
+    descLabel.BackgroundTransparency = 1
+    descLabel.TextColor3 = Color3.fromRGB(150, 150, 160)
+    descLabel.Font = Enum.Font.GothamMedium
+    descLabel.TextSize = 11
+    descLabel.TextWrapped = true
+    descLabel.TextXAlignment = Enum.TextXAlignment.Left
+    descLabel.Text = "Đang đồng bộ dữ liệu Level & trạng thái Buff Inner Rage / Inner Focus..."
+    nativeStatusLabel = descLabel
+
+    -- Hàm tạo từng dòng tùy chọn kèm nút gạt Pill Switch chuẩn phong cách Harvard Labs
+    local function addNativeOptionRow(yPos, labelText, key, onToggle)
+        local rowFrame = Instance.new("TextButton", bodyContainer)
+        rowFrame.Size = UDim2.new(1, 0, 0, 34)
+        rowFrame.Position = UDim2.new(0, 0, 0, yPos)
+        rowFrame.BackgroundColor3 = Color3.fromRGB(26, 26, 30)
+        rowFrame.BorderSizePixel = 0
+        rowFrame.Text = ""
+        rowFrame.AutoButtonColor = false
+        Instance.new("UICorner", rowFrame).CornerRadius = UDim.new(0, 5)
+
+        local rStroke = Instance.new("UIStroke", rowFrame)
+        rStroke.Color = Color3.fromRGB(42, 42, 48)
+        rStroke.Thickness = 1
+
+        local lbl = Instance.new("TextLabel", rowFrame)
+        lbl.Size = UDim2.new(1, -70, 1, 0)
+        lbl.Position = UDim2.new(0, 12, 0, 0)
+        lbl.BackgroundTransparency = 1
+        lbl.Text = labelText
+        lbl.TextColor3 = Color3.fromRGB(230, 230, 235)
+        lbl.Font = Enum.Font.GothamMedium
+        lbl.TextSize = 12
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+
+        -- Công tắc gạt (Pill Switch) bên phải giống hệt ảnh chụp Harvard Labs
+        local pillBg = Instance.new("Frame", rowFrame)
+        pillBg.Size = UDim2.new(0, 38, 0, 20)
+        pillBg.Position = UDim2.new(1, -50, 0.5, -10)
+        pillBg.BorderSizePixel = 0
+        Instance.new("UICorner", pillBg).CornerRadius = UDim.new(1, 0)
+
+        local knob = Instance.new("Frame", pillBg)
+        knob.Size = UDim2.new(0, 14, 0, 14)
+        knob.BorderSizePixel = 0
+        Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+
+        local function refreshSwitch()
+            local state = CUSTOM[key]
+            if state then
+                pillBg.BackgroundColor3 = Color3.fromRGB(230, 55, 35)
+                knob.Position = UDim2.new(1, -17, 0.5, -7)
+                knob.BackgroundColor3 = Color3.fromRGB(18, 18, 20)
+            else
+                pillBg.BackgroundColor3 = Color3.fromRGB(48, 48, 54)
+                knob.Position = UDim2.new(0, 3, 0.5, -7)
+                knob.BackgroundColor3 = Color3.fromRGB(145, 145, 155)
+            end
         end
 
-        row.MouseButton1Click:Connect(function()
+        rowFrame.MouseButton1Click:Connect(function()
             CUSTOM[key] = not CUSTOM[key]
-            updateRow()
+            refreshSwitch()
             applySkillAndBoostSettings()
             saveAllSettings(targetMap, targetDiff)
-            if onChange then onChange(CUSTOM[key]) end
+            if onToggle then onToggle(CUSTOM[key]) end
         end)
 
-        updateRow()
+        refreshSwitch()
     end
 
-    createInHubSwitch(66,  "Tự Chọn Map & Độ Khó Theo Min Lvl", "AUTO_MAP_BY_MIN_LVL")
-    createInHubSwitch(100, "Chống Replay Sớm (Đợi Boss Chết + Drop)", "ANTI_EARLY_REPLAY")
-    createInHubSwitch(134, "Auto Skill Q/E Trợ Lực (DQ Reborn)", "AUTO_SKILL_ASSIST")
-    createInHubSwitch(168, "Auto Re-Execute Khi Chuyển Map", "AUTO_REEXECUTE", function(v)
+    addNativeOptionRow(40,  "Chỉ tung Skill khi có hiệu lực Buff (Inner Rage / Inner Focus - 5s)", "STRICT_BUFF_SYNC")
+    addNativeOptionRow(80,  "Tự chọn Map & Độ khó theo Account có Level thấp nhất", "AUTO_MAP_BY_MIN_LVL")
+    addNativeOptionRow(120, "Chống Replay sớm (Đợi giết xong Boss & nhận đủ Drop)", "ANTI_EARLY_REPLAY")
+    addNativeOptionRow(160, "Auto Re-Execute (Tự chạy lại Script khi chuyển Map / Dungeon)", "AUTO_REEXECUTE", function(v)
         if v then registerAutoReExecute() end
     end)
-    createInHubSwitch(202, "Auto Re-Hop Khi Mất Kết Nối / Kẹt Sảnh", "AUTO_REHOP")
-    createInHubSwitch(236, "Chỉ Tính Level Acc Này (Bỏ qua Acc phụ)", "ONLY_MY_ACCOUNT")
+    addNativeOptionRow(200, "Auto Re-Hop (Tự về Sảnh khi mất kết nối / nâng Độ khó)", "AUTO_REHOP")
 
-    local manualRehopBtn = Instance.new("TextButton", scroll)
-    manualRehopBtn.Size = UDim2.new(1, 0, 0, 26)
-    manualRehopBtn.Position = UDim2.new(0, 0, 0, 270)
-    manualRehopBtn.BackgroundColor3 = Color3.fromRGB(90, 20, 28)
-    manualRehopBtn.TextColor3 = Color3.fromRGB(255, 235, 235)
-    manualRehopBtn.Font = Enum.Font.GothamBold
-    manualRehopBtn.TextSize = 11
-    manualRehopBtn.Text = "Lưu Setting & Về Sảnh DQ Reborn Ngay"
-    manualRehopBtn.ZIndex = 47
-    Instance.new("UICorner", manualRehopBtn).CornerRadius = UDim.new(0, 6)
-    manualRehopBtn.MouseButton1Click:Connect(function()
+    -- Nút hành động màu đỏ cam chuẩn theo thiết kế nút "Sell once now" của Harvard Labs
+    local actionBtn = Instance.new("TextButton", bodyContainer)
+    actionBtn.Size = UDim2.new(0, 190, 0, 30)
+    actionBtn.Position = UDim2.new(0, 0, 0, 244)
+    actionBtn.BackgroundColor3 = Color3.fromRGB(220, 50, 30)
+    actionBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+    actionBtn.Font = Enum.Font.GothamBold
+    actionBtn.TextSize = 12
+    actionBtn.Text = "Lưu Setting & Về Sảnh Ngay"
+    Instance.new("UICorner", actionBtn).CornerRadius = UDim.new(0, 5)
+    actionBtn.MouseButton1Click:Connect(function()
         triggerRehop("Bấm Lưu & Về Sảnh trong Harvard Hub")
     end)
 
-    toggleTabBtn.MouseButton1Click:Connect(function()
-        inHubPage.Visible = not inHubPage.Visible
-        toggleTabBtn.BackgroundColor3 = inHubPage.Visible and Color3.fromRGB(200, 40, 50) or Color3.fromRGB(145, 24, 34)
-        toggleTabBtn.Text = inHubPage.Visible and "✕ Đóng AutoMap" or "⚙ AutoMap / ReExec"
+    headerBtn.MouseButton1Click:Connect(function()
+        isCollapsed = not isCollapsed
+        bodyContainer.Visible = not isCollapsed
+        redLine.Visible = not isCollapsed
+        sectionCard.Size = UDim2.new(1, 0, 0, isCollapsed and collapsedHeight or expandedHeight)
+        arrowLabel.Text = isCollapsed and "∨" or "∧"
+    end)
+
+    -- Đảm bảo khi chuyển qua lại giữa các Tab trong Harvard Labs, mục này luôn hiển thị ở đầu danh sách
+    sectionCard:GetPropertyChangedSignal("Visible"):Connect(function()
+        if not sectionCard.Visible then
+            sectionCard.Visible = true
+        end
     end)
 end
 
 -- =====================================================================
--- 9. VÒNG LẶP ĐỒNG BỘ LEVEL THẤP NHẤT, CHUYỂN MAP & LƯU SETTING
+-- 11. VÒNG LẶP ĐỒNG BỘ LEVEL, TRẠNG THÁI BUFF & TỰ CHUYỂN MAP
 -- =====================================================================
 local lastDirectQueueAttempt = 0
 
@@ -1142,7 +1363,6 @@ local function tryDirectLobbyQueueBackup(mapName, diffName)
     if os.clock() - lastDirectQueueAttempt < 8 then return end
     lastDirectQueueAttempt = os.clock()
 
-    -- Hỗ trợ tạo phòng trực tiếp nếu Harvard Labs ở Sảnh chưa tự tạo cho các độ khó Easy/Medium/Hard
     pcall(function()
         local remotes = ReplicatedStorage:FindFirstChild("remotes")
         if remotes then
@@ -1175,10 +1395,10 @@ task.spawn(function()
     local lastSavedSig = ""
 
     while not RT.destroyed do
-        if not embeddedReady then
-            local foundWin = findHarvardHubWindow()
-            if foundWin then
-                injectIntoHarvardHub(foundWin)
+        if not nativeCardInjected then
+            local scroll = findHarvardContentScrollingFrame()
+            if scroll then
+                injectNativeSectionCard(scroll)
             end
         end
 
@@ -1197,8 +1417,6 @@ task.spawn(function()
                 CFG.autoQueuePrivate    = CUSTOM.FORCE_PRIVATE
                 saveAllSettings(bestMap, bestDiff)
                 if type(context.refreshAll) == "function" then pcall(context.refreshAll) end
-                print(("[Boost][AutoMap] Min Lvl: %d (%s) | Host Lvl: %d -> Chọn Map: %s [%s - Req Lv.%d]")
-                    :format(minLvl, tostring(ownerName), hostLvl, tostring(bestMap), tostring(bestDiff), reqLvl))
             end
         end
 
@@ -1210,9 +1428,8 @@ task.spawn(function()
             needLeaveForUpgrade = false
             dungeonBaselineMinLvl  = nil
             dungeonBaselineTierIdx = nil
-            statusStr = ("Đang ở Sảnh -> Vào: %s [%s]"):format(tostring(bestMap), tostring(bestDiff))
+            statusStr = ("Sảnh -> Tự tạo: %s [%s]"):format(tostring(bestMap), tostring(bestDiff))
 
-            -- Nếu đứng ở Sảnh quá 10 giây mà Harvard Labs chưa tự vào phòng, gọi hỗ trợ tạo phòng đúng Map & Độ khó
             if os.clock() - lobbyStart > 10 then
                 tryDirectLobbyQueueBackup(bestMap, bestDiff)
             end
@@ -1236,7 +1453,7 @@ task.spawn(function()
 
             if currentRunState == "LOOT_DONE" then
                 if needLeaveForUpgrade then
-                    statusStr = ("Lên Lv.%d -> Về Sảnh nâng [%s - %s]!"):format(minLvl, tostring(bestMap), tostring(bestDiff))
+                    statusStr = ("Đủ Lv.%d -> Về Sảnh nâng [%s - %s]!"):format(minLvl, tostring(bestMap), tostring(bestDiff))
                     saveAllSettings(bestMap, bestDiff)
                     triggerRehop(("Acc thấp nhất lên Lv.%d -> Nâng lên [%s - %s]"):format(minLvl, tostring(bestMap), tostring(bestDiff)))
                     break
@@ -1248,23 +1465,25 @@ task.spawn(function()
             elseif currentRunState == "FIGHTING_BOSS" then
                 statusStr = "Đang đánh Boss (Khóa thoát trận)"
             else
-                statusStr = "Đang đánh trong Dungeon (Khóa thoát trận)"
+                statusStr = "Đang đánh trong Dungeon"
             end
         end
 
-        if infoBoxLabel then
-            infoBoxLabel.Text = ("Min Lvl: %d (%s) | Host Lvl: %d\nMục tiêu: %s [%s - Req Lv.%d]\nTrạng thái: %s"):format(
+        if nativeStatusLabel then
+            local buffStateTxt = isDamageBuffActive() and "ĐANG CÓ BUFF (Cho phép xả Skill)" or "CHỜ BUFF (Khóa Skill sát thương)"
+            nativeStatusLabel.Text = ("Min Lvl: %d (%s) | Host Lvl: %d | Map mục tiêu: %s [%s - Req Lv.%d]\nBuff Inner Rage/Focus: %s | Trạng thái: %s"):format(
                 currentMinLvl,
                 tostring(currentMinOwner):sub(1, 12),
                 currentHostLvl,
                 tostring(targetMap),
                 tostring(targetDiff),
                 targetReq,
+                buffStateTxt,
                 statusStr
             )
         end
 
-        task.wait(0.4)
+        task.wait(0.35)
     end
 end)
 
@@ -1313,8 +1532,8 @@ task.spawn(function()
     end
 end)
 
-print(("[Boost DQ Reborn] Đã tích hợp vào trong Harvard Hub | Min Lvl: %d (%s) -> %s [%s - Req Lv.%d]")
-    :format(currentMinLvl, tostring(currentMinOwner), tostring(targetMap), tostring(targetDiff), targetReq))
+print(("[Boost DQ Reborn] Đã tích hợp vào 1 Hub Harvard duy nhất | Buff Sync (5s): ON | Min Lvl: %d -> %s [%s]")
+    :format(currentMinLvl, tostring(targetMap), tostring(targetDiff)))
 ]=====]
 
 local fullSelfFile = "local WRAPPER_SOURCE = [=====[" .. WRAPPER_SOURCE .. "]=====]\n"
