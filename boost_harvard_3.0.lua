@@ -1,5 +1,5 @@
 -- =====================================================================
--- Harvard Labs v3.0 — DQ Reborn (Fix Infinite Lobby Loop + Auto Difficulty)
+-- Harvard Labs v3.0 — DQ Reborn (Multi-Acc Min Lvl + Auto Save On Map Change)
 -- =====================================================================
 
 local WRAPPER_SOURCE = [=====[
@@ -21,21 +21,21 @@ local CUSTOM = {
     ANTI_EARLY_REPLAY     = true,  -- Khóa Replay khi Boss chưa chết & chưa nhận xong Drop
     LOOT_WAIT_TIME        = 6,     -- Số giây chờ nhận Drop sau khi Boss chết
 
-    -- 3. Tự chọn Map & Độ khó theo Level thấp nhất (Chuẩn Wiki DQ Reborn)
+    -- 3. Tự chọn Map & Độ khó theo Level thấp nhất (Mặc định quét tất cả acc)
     AUTO_MAP_BY_MIN_LVL   = true,  -- Tự động nâng Độ khó & Map theo acc có Level thấp nhất
-    ONLY_MY_ACCOUNT       = true,  -- Mặc định true để KHÔNG quét nhầm người lạ Lv.1 ở Sảnh Public!
-    WHITELIST_ACCS        = {},    -- Nếu kéo acc phụ, điền tên vào đây VD: {"AccChinh", "AccPhu1"} và tắt ONLY_MY_ACCOUNT
+    ONLY_MY_ACCOUNT       = false, -- Luôn để false mặc định để quét cả các acc phụ (KHÔNG tự bật lên true)
+    WHITELIST_ACCS        = {},    -- Tùy chọn: Điền tên các acc phụ VD: {"AccPhu1", "AccPhu2"} nếu muốn bỏ qua người lạ ở sảnh
     ALLOW_GILDED_SKIES    = true,  -- Cho phép lên Gilded Skies ở Lv.190+
     FORCE_HARDCORE        = false,
     FORCE_PRIVATE         = true,
 
-    -- 4. Auto Re-Execute & Auto Re-Hop
+    -- 4. Auto Re-Execute, Auto Save & Auto Re-Hop
     AUTO_REEXECUTE        = true,
     AUTO_REHOP            = true,
-    LOBBY_STUCK_TIMEOUT   = 120,   -- Chỉ Re-hop nếu đứng kẹt ở Sảnh quá 120s không vào được trận
-    REBORN_LOBBY_ID       = nil,   -- Tự động lưu PlaceId Sảnh khi có workspace.Lobby
-    ENTERED_MAP           = nil,
-    ENTERED_DIFF          = nil,
+    LOBBY_STUCK_TIMEOUT   = 120,
+    REBORN_LOBBY_ID       = nil,
+    SAVED_MAP             = nil,
+    SAVED_DIFF            = nil,
 }
 -- =====================================================================
 
@@ -57,30 +57,42 @@ while not LocalPlayer do task.wait(); LocalPlayer = Players.LocalPlayer end
 local HUB_CFG_FILE  = "HarvardLabs/reborn_hub_config.json"
 local AUTOEXEC_PATH = "HarvardLabs/autoexec_boost_wrapper.lua"
 
+-- Nạp cấu hình đã lưu (Nếu file cũ từng lưu ONLY_MY_ACCOUNT = true do lỗi bản trước thì kiểm tra cờ VERSION)
 if type(isfile) == "function" and type(readfile) == "function" then
     local ok, exists = pcall(isfile, HUB_CFG_FILE)
     if ok and exists then
         local ok2, data = pcall(function() return HttpService:JSONDecode(readfile(HUB_CFG_FILE)) end)
         if ok2 and type(data) == "table" then
             for k, v in pairs(data) do
-                CUSTOM[k] = v
+                if CUSTOM[k] ~= nil or k == "REBORN_LOBBY_ID" or k == "SAVED_MAP" or k == "SAVED_DIFF" then
+                    CUSTOM[k] = v
+                end
+            end
+            -- Tự động reset ONLY_MY_ACCOUNT về false 1 lần nếu bị kẹt từ bản cũ
+            if data.CFG_SCHEMA_VER ~= 2 then
+                CUSTOM.ONLY_MY_ACCOUNT = false
             end
         end
     end
 end
 
--- Nếu không khai báo WHITELIST_ACCS, luôn ép ONLY_MY_ACCOUNT = true để tránh quét nhầm người lạ ở Sảnh!
-if type(CUSTOM.WHITELIST_ACCS) ~= "table" or #CUSTOM.WHITELIST_ACCS == 0 then
-    CUSTOM.ONLY_MY_ACCOUNT = true
-end
+-- Hàm lưu đồng bộ cả cấu hình Hub mở rộng lẫn cấu hình release_<UserId>.json của Harvard Labs
+local contextRef = nil
 
-local function saveHubConfig()
+local function saveAllSettings(targetMap, targetDiff)
+    if targetMap then CUSTOM.SAVED_MAP = targetMap end
+    if targetDiff then CUSTOM.SAVED_DIFF = targetDiff end
+
     if type(writefile) == "function" then
         pcall(function()
-            if type(isfolder) == "function" and not isfolder("HarvardLabs") then
-                pcall(makefolder, "HarvardLabs")
+            if type(isfolder) == "function" then
+                if not isfolder("HarvardLabs") then pcall(makefolder, "HarvardLabs") end
+                if not isfolder("HarvardLabs/configs") then pcall(makefolder, "HarvardLabs/configs") end
             end
+
+            -- 1. Lưu cấu hình Hub mở rộng
             writefile(HUB_CFG_FILE, HttpService:JSONEncode({
+                CFG_SCHEMA_VER      = 2,
                 BOOST               = CUSTOM.BOOST,
                 DETECT_ONLY         = CUSTOM.DETECT_ONLY,
                 DRAW_HUD            = CUSTOM.DRAW_HUD,
@@ -91,31 +103,51 @@ local function saveHubConfig()
                 AUTO_MAP_BY_MIN_LVL = CUSTOM.AUTO_MAP_BY_MIN_LVL,
                 ONLY_MY_ACCOUNT     = CUSTOM.ONLY_MY_ACCOUNT,
                 ALLOW_GILDED_SKIES  = CUSTOM.ALLOW_GILDED_SKIES,
+                FORCE_HARDCORE      = CUSTOM.FORCE_HARDCORE,
+                FORCE_PRIVATE       = CUSTOM.FORCE_PRIVATE,
                 AUTO_REEXECUTE      = CUSTOM.AUTO_REEXECUTE,
                 AUTO_REHOP          = CUSTOM.AUTO_REHOP,
                 REBORN_LOBBY_ID     = CUSTOM.REBORN_LOBBY_ID,
-                ENTERED_MAP         = CUSTOM.ENTERED_MAP,
-                ENTERED_DIFF        = CUSTOM.ENTERED_DIFF,
+                SAVED_MAP           = CUSTOM.SAVED_MAP,
+                SAVED_DIFF          = CUSTOM.SAVED_DIFF,
             }))
+
+            -- 2. Lưu vào cấu hình gốc của Harvard Labs
+            if contextRef and type(contextRef.saveConfig) == "function" then
+                pcall(contextRef.saveConfig)
+            end
+
+            local uid = tonumber(LocalPlayer.UserId) or 0
+            local cfgPath = ("HarvardLabs/configs/release_%s.json"):format(uid > 0 and tostring(uid) or "unknown")
+            if type(isfile) == "function" and isfile(cfgPath) and type(readfile) == "function" then
+                local ok, decoded = pcall(function() return HttpService:JSONDecode(readfile(cfgPath)) end)
+                if ok and type(decoded) == "table" then
+                    decoded.streamerLevel       = false
+                    decoded.streamerOthers      = false
+                    decoded.streamerLeaderboard = false
+                    decoded.modDetect           = false
+                    decoded.modKick             = false
+                    if CUSTOM.AUTO_MAP_BY_MIN_LVL and CUSTOM.SAVED_MAP and CUSTOM.SAVED_DIFF then
+                        decoded.autoQueueMap        = CUSTOM.SAVED_MAP
+                        decoded.autoQueueDifficulty = CUSTOM.SAVED_DIFF
+                        decoded.autoQueueHardcore   = CUSTOM.FORCE_HARDCORE
+                        decoded.autoQueuePrivate    = CUSTOM.FORCE_PRIVATE
+                    end
+                    writefile(cfgPath, HttpService:JSONEncode(decoded))
+                end
+            end
         end)
     end
 end
 
 -- =====================================================================
--- 1. NHẬN DIỆN CHÍNH XÁC SẢNH (LOBBY) VS TRONG DUNGEON (CÓ KHÓA TRẠNG THÁI)
+-- 1. NHẬN DIỆN CHÍNH XÁC SẢNH (LOBBY) VS TRONG DUNGEON
 -- =====================================================================
 local lockedInDungeon = false
 
 local function isInDungeon()
-    -- Nếu đã xác nhận vào trong Dungeon ở server này thì khóa cứng là true suốt trận!
     if lockedInDungeon then return true end
-
-    -- Nếu có thư mục Lobby trong Workspace -> Chắc chắn 100% đang ở Sảnh
-    if workspace:FindFirstChild("Lobby") ~= nil then
-        return false
-    end
-
-    -- Nếu có thư mục dungeon, Map hoặc enemies -> Đang ở trong Dungeon
+    if workspace:FindFirstChild("Lobby") ~= nil then return false end
     if workspace:FindFirstChild("dungeon") ~= nil
         or workspace:FindFirstChild("Map") ~= nil
         or workspace:FindFirstChild("enemies") ~= nil
@@ -123,22 +155,18 @@ local function isInDungeon()
         lockedInDungeon = true
         return true
     end
-
-    -- Nếu đã lưu REBORN_LOBBY_ID và PlaceId hiện tại khác với REBORN_LOBBY_ID -> Đang ở trong Dungeon
     if type(CUSTOM.REBORN_LOBBY_ID) == "number" and CUSTOM.REBORN_LOBBY_ID > 0 and game.PlaceId ~= CUSTOM.REBORN_LOBBY_ID then
         lockedInDungeon = true
         return true
     end
-
     return false
 end
 
 local function resolveRebornLobbyPlaceId()
-    -- CHỈ lưu PlaceId làm Sảnh khi thực sự nhìn thấy thư mục workspace.Lobby!
     if workspace:FindFirstChild("Lobby") ~= nil then
         if CUSTOM.REBORN_LOBBY_ID ~= game.PlaceId then
             CUSTOM.REBORN_LOBBY_ID = game.PlaceId
-            saveHubConfig()
+            saveAllSettings()
         end
         return CUSTOM.REBORN_LOBBY_ID
     end
@@ -159,69 +187,68 @@ local function resolveRebornLobbyPlaceId()
                     if not fallbackId then fallbackId = pId end
                     if pName:find("lobby") or (pId ~= game.PlaceId and (pName:find("reborn") or pName:find("dungeon quest"))) then
                         CUSTOM.REBORN_LOBBY_ID = pId
-                        saveHubConfig()
+                        saveAllSettings()
                         return pId
                     end
                 end
             end
             if fallbackId then
                 CUSTOM.REBORN_LOBBY_ID = fallbackId
-                saveHubConfig()
+                saveAllSettings()
                 return fallbackId
             end
         end
     end
-
     return nil
 end
 
 task.spawn(resolveRebornLobbyPlaceId)
 
 -- =====================================================================
--- 2. BẢNG TIER MAP & ĐỘ KHÓ CHUẨN WIKI DUNGEON QUEST REBORN
+-- 2. BẢNG TIER MAP & ĐỘ KHÓ CHUẨN WIKI + QUÉT LEVEL ĐA TÀI KHOẢN
 -- =====================================================================
 local DUNGEON_TIERS = {
     -- Desert Temple (5 Độ khó: 1, 6, 12, 20, 27)
-    { map = "Desert Temple",     diff = "Easy",      req = 1   },
-    { map = "Desert Temple",     diff = "Medium",    req = 6   },
-    { map = "Desert Temple",     diff = "Hard",      req = 12  },
-    { map = "Desert Temple",     diff = "Insane",    req = 20  },
-    { map = "Desert Temple",     diff = "Nightmare", req = 27  },
+    { idx = 1,  map = "Desert Temple",     diff = "Easy",      req = 1   },
+    { idx = 2,  map = "Desert Temple",     diff = "Medium",    req = 6   },
+    { idx = 3,  map = "Desert Temple",     diff = "Hard",      req = 12  },
+    { idx = 4,  map = "Desert Temple",     diff = "Insane",    req = 20  },
+    { idx = 5,  map = "Desert Temple",     diff = "Nightmare", req = 27  },
 
     -- Winter Outpost (5 Độ khó: 33, 40, 45, 50, 55)
-    { map = "Winter Outpost",    diff = "Easy",      req = 33  },
-    { map = "Winter Outpost",    diff = "Medium",    req = 40  },
-    { map = "Winter Outpost",    diff = "Hard",      req = 45  },
-    { map = "Winter Outpost",    diff = "Insane",    req = 50  },
-    { map = "Winter Outpost",    diff = "Nightmare", req = 55  },
+    { idx = 6,  map = "Winter Outpost",    diff = "Easy",      req = 33  },
+    { idx = 7,  map = "Winter Outpost",    diff = "Medium",    req = 40  },
+    { idx = 8,  map = "Winter Outpost",    diff = "Hard",      req = 45  },
+    { idx = 9,  map = "Winter Outpost",    diff = "Insane",    req = 50  },
+    { idx = 10, map = "Winter Outpost",    diff = "Nightmare", req = 55  },
 
-    -- Từ Pirate Island trở đi (2 Độ khó: Insane & Nightmare cách nhau 5 cấp)
-    { map = "Pirate Island",     diff = "Insane",    req = 60  },
-    { map = "Pirate Island",     diff = "Nightmare", req = 65  },
-    { map = "King's Castle",     diff = "Insane",    req = 70  },
-    { map = "King's Castle",     diff = "Nightmare", req = 75  },
-    { map = "The Underworld",    diff = "Insane",    req = 80  },
-    { map = "The Underworld",    diff = "Nightmare", req = 85  },
-    { map = "Samurai Palace",    diff = "Insane",    req = 90  },
-    { map = "Samurai Palace",    diff = "Nightmare", req = 95  },
-    { map = "The Canals",        diff = "Insane",    req = 100 },
-    { map = "The Canals",        diff = "Nightmare", req = 105 },
-    { map = "Ghastly Harbor",    diff = "Insane",    req = 110 },
-    { map = "Ghastly Harbor",    diff = "Nightmare", req = 115 },
-    { map = "Steampunk Sewers",  diff = "Insane",    req = 120 },
-    { map = "Steampunk Sewers",  diff = "Nightmare", req = 125 },
-    { map = "Orbital Outpost",   diff = "Insane",    req = 135 },
-    { map = "Orbital Outpost",   diff = "Nightmare", req = 140 },
-    { map = "Volcanic Chambers", diff = "Insane",    req = 150 },
-    { map = "Volcanic Chambers", diff = "Nightmare", req = 155 },
-    { map = "Aquatic Temple",    diff = "Insane",    req = 160 },
-    { map = "Aquatic Temple",    diff = "Nightmare", req = 165 },
-    { map = "Enchanted Forest",  diff = "Insane",    req = 170 },
-    { map = "Enchanted Forest",  diff = "Nightmare", req = 175 },
-    { map = "Northern Lands",    diff = "Insane",    req = 180 },
-    { map = "Northern Lands",    diff = "Nightmare", req = 185 },
-    { map = "Gilded Skies",      diff = "Insane",    req = 190, gs = true },
-    { map = "Gilded Skies",      diff = "Nightmare", req = 195, gs = true },
+    -- Các map tiếp theo (Insane & Nightmare cách nhau 5 cấp)
+    { idx = 11, map = "Pirate Island",     diff = "Insane",    req = 60  },
+    { idx = 12, map = "Pirate Island",     diff = "Nightmare", req = 65  },
+    { idx = 13, map = "King's Castle",     diff = "Insane",    req = 70  },
+    { idx = 14, map = "King's Castle",     diff = "Nightmare", req = 75  },
+    { idx = 15, map = "The Underworld",    diff = "Insane",    req = 80  },
+    { idx = 16, map = "The Underworld",    diff = "Nightmare", req = 85  },
+    { idx = 17, map = "Samurai Palace",    diff = "Insane",    req = 90  },
+    { idx = 18, map = "Samurai Palace",    diff = "Nightmare", req = 95  },
+    { idx = 19, map = "The Canals",        diff = "Insane",    req = 100 },
+    { idx = 20, map = "The Canals",        diff = "Nightmare", req = 105 },
+    { idx = 21, map = "Ghastly Harbor",    diff = "Insane",    req = 110 },
+    { idx = 22, map = "Ghastly Harbor",    diff = "Nightmare", req = 115 },
+    { idx = 23, map = "Steampunk Sewers",  diff = "Insane",    req = 120 },
+    { idx = 24, map = "Steampunk Sewers",  diff = "Nightmare", req = 125 },
+    { idx = 25, map = "Orbital Outpost",   diff = "Insane",    req = 135 },
+    { idx = 26, map = "Orbital Outpost",   diff = "Nightmare", req = 140 },
+    { idx = 27, map = "Volcanic Chambers", diff = "Insane",    req = 150 },
+    { idx = 28, map = "Volcanic Chambers", diff = "Nightmare", req = 155 },
+    { idx = 29, map = "Aquatic Temple",    diff = "Insane",    req = 160 },
+    { idx = 30, map = "Aquatic Temple",    diff = "Nightmare", req = 165 },
+    { idx = 31, map = "Enchanted Forest",  diff = "Insane",    req = 170 },
+    { idx = 32, map = "Enchanted Forest",  diff = "Nightmare", req = 175 },
+    { idx = 33, map = "Northern Lands",    diff = "Insane",    req = 180 },
+    { idx = 34, map = "Northern Lands",    diff = "Nightmare", req = 185 },
+    { idx = 35, map = "Gilded Skies",      diff = "Insane",    req = 190, gs = true },
+    { idx = 36, map = "Gilded Skies",      diff = "Nightmare", req = 195, gs = true },
 }
 
 getgenv().HL_RealLevels = getgenv().HL_RealLevels or {}
@@ -238,30 +265,50 @@ end
 
 local function readPlayerLevelRaw(plr)
     if not plr then return nil end
-    local ls = plr:FindFirstChild("leaderstats")
-    local objs = {
-        ls and ls:FindFirstChild("Level"),
-        ls and ls:FindFirstChild("level"),
-        ls and ls:FindFirstChild("Lvl"),
-        plr:FindFirstChild("level"),
-        plr:FindFirstChild("Level"),
+
+    -- 1. Kiểm tra Attribute trên Player hoặc Character
+    for _, attrName in ipairs({ "Level", "level", "lvl" }) do
+        local a = plr:GetAttribute(attrName) or (plr.Character and plr.Character:GetAttribute(attrName))
+        local n = parseLevelValue(a)
+        if n and n > 0 and n ~= 999 then
+            realLevelCache[plr.UserId] = n
+            return n
+        end
+    end
+
+    -- 2. Kiểm tra trong leaderstats và các thư mục dữ liệu con của Player
+    local folders = {
+        plr:FindFirstChild("leaderstats"),
+        plr:FindFirstChild("Data"),
+        plr:FindFirstChild("PlayerData"),
+        plr:FindFirstChild("Stats"),
+        plr:FindFirstChild("stats"),
+        plr,
     }
-    for _, lvlObj in ipairs(objs) do
-        if lvlObj then
-            local n = parseLevelValue(lvlObj.Value)
-            if n and n > 0 and n ~= 999 then
-                realLevelCache[plr.UserId] = n
-                return n
+    for _, folder in ipairs(folders) do
+        if folder then
+            for _, childName in ipairs({ "Level", "level", "Lvl", "lvl" }) do
+                local obj = folder:FindFirstChild(childName)
+                if obj and (obj:IsA("ValueBase")) then
+                    local n = parseLevelValue(obj.Value)
+                    if n and n > 0 and n ~= 999 then
+                        realLevelCache[plr.UserId] = n
+                        return n
+                    end
+                end
             end
         end
     end
 
+    -- 3. Quét BillboardGui trên đầu nhân vật trong Workspace
     local char = plr.Character or workspace:FindFirstChild(plr.Name)
     if char then
         for _, desc in ipairs(char:GetDescendants()) do
             if desc:IsA("TextLabel") then
                 local txt = desc.Text:gsub(",", "")
-                local m = txt:match("[Ll][Vv][Ll]?%.?%s*(%d+)") or txt:match("[Ll]evel:?%s*(%d+)") or txt:match("^(%d+)$")
+                local m = txt:match("[Ll][Vv][Ll]?%.?%s*:?%s*(%d+)")
+                    or txt:match("[Ll]evel%s*:?%s*(%d+)")
+                    or txt:match("^%s*(%d+)%s*$")
                 if m then
                     local n = tonumber(m)
                     if n and n > 0 and n ~= 999 and n < 500 then
@@ -281,6 +328,11 @@ for _, plr in ipairs(Players:GetPlayers()) do
 end
 
 local function getLowestAccountLevel()
+    if CUSTOM.ONLY_MY_ACCOUNT then
+        local myLvl = readPlayerLevelRaw(LocalPlayer) or realLevelCache[LocalPlayer.UserId] or 1
+        return myLvl, LocalPlayer.Name
+    end
+
     local whitelist = {}
     local hasWhitelist = false
     if type(CUSTOM.WHITELIST_ACCS) == "table" and #CUSTOM.WHITELIST_ACCS > 0 then
@@ -290,17 +342,21 @@ local function getLowestAccountLevel()
         end
     end
 
-    -- Nếu chỉ tính bản thân HOẶC không có danh sách WHITELIST_ACCS -> Chỉ lấy Level của chính mình
-    if CUSTOM.ONLY_MY_ACCOUNT or not hasWhitelist then
-        local myLvl = readPlayerLevelRaw(LocalPlayer) or realLevelCache[LocalPlayer.UserId] or 1
-        return myLvl, LocalPlayer.Name
+    -- Kiểm tra xem Harvard Labs có đang cài đặt tên acc kéo (carryName) không
+    local carryTarget = contextRef and contextRef.CFG and tostring(contextRef.CFG.carryName or "")
+    if carryTarget and #carryTarget > 1 then
+        whitelist[string.lower(carryTarget)] = true
     end
 
     local minLvl = math.huge
     local minOwner = LocalPlayer.Name
 
     for _, plr in ipairs(Players:GetPlayers()) do
-        if plr == LocalPlayer or whitelist[string.lower(plr.Name)] then
+        local allow = true
+        if hasWhitelist and plr ~= LocalPlayer and not whitelist[string.lower(plr.Name)] then
+            allow = false
+        end
+        if allow then
             local l = readPlayerLevelRaw(plr)
             if l and l > 0 and l < minLvl then
                 minLvl = l
@@ -310,7 +366,7 @@ local function getLowestAccountLevel()
     end
 
     if minLvl == math.huge then
-        minLvl = realLevelCache[LocalPlayer.UserId] or 1
+        minLvl = readPlayerLevelRaw(LocalPlayer) or realLevelCache[LocalPlayer.UserId] or 1
     end
     return minLvl, minOwner
 end
@@ -326,51 +382,18 @@ local function selectBestDungeonForLevel(lvl)
             end
         end
     end
-    return best.map, best.diff, best.req
-end
-
-local function writeMapAndDiffToHarvardJson(targetMap, targetDiff)
-    if type(isfile) ~= "function" or type(readfile) ~= "function" or type(writefile) ~= "function" then
-        return
-    end
-    pcall(function()
-        local uid = tonumber(LocalPlayer.UserId) or 0
-        local cfgPath = ("HarvardLabs/configs/release_%s.json"):format(uid > 0 and tostring(uid) or "unknown")
-        if isfile(cfgPath) then
-            local ok, decoded = pcall(function() return HttpService:JSONDecode(readfile(cfgPath)) end)
-            if ok and type(decoded) == "table" then
-                decoded.streamerLevel       = false
-                decoded.modDetect           = false
-                decoded.modKick             = false
-                decoded.autoQueueMap        = targetMap
-                decoded.autoQueueDifficulty = targetDiff
-                decoded.autoQueueHardcore   = CUSTOM.FORCE_HARDCORE
-                decoded.autoQueuePrivate    = CUSTOM.FORCE_PRIVATE
-                writefile(cfgPath, HttpService:JSONEncode(decoded))
-            end
-        end
-    end)
+    return best.map, best.diff, best.req, best.idx
 end
 
 local initMinLvl, initOwner = getLowestAccountLevel()
-local initMap, initDiff, initReq = selectBestDungeonForLevel(initMinLvl)
+local initMap, initDiff, initReq, initTierIdx = selectBestDungeonForLevel(initMinLvl)
 
 if CUSTOM.AUTO_MAP_BY_MIN_LVL then
-    writeMapAndDiffToHarvardJson(initMap, initDiff)
-end
-
-if not isInDungeon() then
-    CUSTOM.ENTERED_MAP  = initMap
-    CUSTOM.ENTERED_DIFF = initDiff
-    saveHubConfig()
-elseif not CUSTOM.ENTERED_MAP or not CUSTOM.ENTERED_DIFF then
-    CUSTOM.ENTERED_MAP  = initMap
-    CUSTOM.ENTERED_DIFF = initDiff
-    saveHubConfig()
+    saveAllSettings(initMap, initDiff)
 end
 
 -- =====================================================================
--- 3. TẢI VÀ KHỞI CHẠY HARVARD LABS GỐC
+-- 3. TẢI VÀ KHỞI CHẠY HARVARD LABS GỐC (TẮT STREAMER CHE LEVEL ACC PHỤ)
 -- =====================================================================
 local function fetchURL(url)
     if type(httpget) == "function" then
@@ -396,6 +419,11 @@ if not source then
     error("[Boost] Không thể tải script gốc. Hãy kiểm tra lại ORIGINAL_URL hoặc quyền HTTP của Executor.")
 end
 
+-- Tắt ngay streamerLevel, streamerOthers, streamerLeaderboard trong source trước khi chạy để không bao giờ che Level của acc phụ thành 999!
+source = source:gsub("streamerLevel = true", "streamerLevel = false")
+source = source:gsub("streamerOthers = true", "streamerOthers = false")
+source = source:gsub("streamerLeaderboard = true", "streamerLeaderboard = false")
+
 local chunk, err = loadstring(source, "=HarvardOriginal")
 if not chunk then error("[Boost] Lỗi biên dịch script gốc: " .. tostring(err)) end
 chunk()
@@ -417,11 +445,12 @@ for _ = 1, 100 do
 end
 if not context then error("[Boost] Không tìm thấy context trong getgc") end
 
+contextRef = context
 local CFG, RT = context.CFG, context.RT
 _G = _G or {}; getgenv = getgenv or function() return _G end
 
 -- =====================================================================
--- 4. TẮT MOD-KICK CỦA HARVARD LABS & MỞ KHÓA AUTO SKILL 100%
+-- 4. KHÔI PHỤC PROFILE CHUẨN & BẢO TOÀN LƯU SETTING MAP KHI CHUYỂN MÀN
 -- =====================================================================
 if type(context.autoClass) == "function" then pcall(context.autoClass, true) end
 if type(context.applyClassProfile) == "function" then
@@ -450,10 +479,13 @@ if type(CFG.aoeKnown) == "table" then
 end
 
 local function applySkillAndBoostSettings()
-    -- Tắt hoàn toàn cơ chế tự Kick/Leave phòng của Harvard Labs
-    CFG.modDetect     = false
-    CFG.modKick       = false
-    CFG.streamerLevel = false
+    -- Tắt giả Level 999 cho cả mình và người chơi khác để luôn đọc đúng Level thật của acc phụ
+    CFG.streamerLevel       = false
+    CFG.streamerOthers      = false
+    CFG.streamerLeaderboard = false
+    CFG.modDetect           = false
+    CFG.modKick             = false
+
     CFG.aoeDistance   = 0
     CFG.autoQ         = true
     CFG.autoE         = true
@@ -491,10 +523,11 @@ local function applySkillAndBoostSettings()
     end
 end
 
+-- CHỈ gỡ các khóa tầm đánh đã nhân hệ số khỏi PERSIST, GIỮ NGUYÊN autoQueueMap & autoQueueDifficulty để Harvard Labs lưu Setting khi chuyển Map!
 if type(context.PERSIST) == "table" then
     for i = #context.PERSIST, 1, -1 do
         local k = context.PERSIST[i]
-        if k == "aoeDistance" or k == "streamerLevel" or k == "modDetect" or k == "modKick" or k == "autoQueueMap" or k == "autoQueueDifficulty" or k == "autoQueueReplay" then
+        if k == "aoeDistance" then
             table.remove(context.PERSIST, i)
         else
             for _, rk in ipairs(KEYS) do
@@ -658,26 +691,32 @@ task.spawn(function()
 end)
 
 -- =====================================================================
--- 6. KIỂM SOÁT BOSS DROP CHUẨN XÁC (KHÔNG QUÉT NHẦM QUÁI THƯỜNG)
+-- 6. KIỂM SOÁT BOSS DROP & CHUYỂN ĐỘ KHÓ / MAP CHUẨN XÁC
 -- =====================================================================
 local bossConfirmedAliveOnce = false
 local bossDeadAt             = nil
 local bossTrackedName        = nil
 local currentMinLvl, currentMinOwner = initMinLvl, initOwner
-local targetMap, targetDiff, targetReq = initMap, initDiff, initReq
+local targetMap, targetDiff, targetReq, targetTierIdx = initMap, initDiff, initReq, initTierIdx
 local currentRunState  = isInDungeon() and "CLEARING_MOBS" or "LOBBY"
 local currentDropTimer = 0
 local needLeaveForUpgrade = false
+
+-- Theo dõi mốc Tier thấp nhất của các acc có mặt trong Dungeon lúc bắt đầu trận
+-- để không bao giờ bị văng nhầm khi acc phụ vào trễ vài giây!
+local dungeonBaselineMinLvl = nil
+local dungeonBaselineTierIdx = nil
 
 local function evaluateDungeonBossState()
     if not isInDungeon() then
         bossConfirmedAliveOnce = false
         bossDeadAt             = nil
         bossTrackedName        = nil
+        dungeonBaselineMinLvl  = nil
+        dungeonBaselineTierIdx = nil
         return "LOBBY", 0
     end
 
-    -- 1) Kiểm tra xem giao diện kết thúc trận / bình chọn Replay của game đã hiện lên chưa
     local pgui = LocalPlayer:FindFirstChild("PlayerGui")
     local endScreenShown = false
     if pgui then
@@ -690,7 +729,6 @@ local function evaluateDungeonBossState()
         end
     end
 
-    -- 2) Kiểm tra trong context.RD.enemies (Chỉ tính là Boss khi e.isBoss == true và từng có Health > 0)
     local RD = context.RD
     local bossAlive = false
     local anyEnemyAlive = false
@@ -708,7 +746,6 @@ local function evaluateDungeonBossState()
         end
     end
 
-    -- 3) Kiểm tra các Model có tag isBoss thật sự trong workspace.enemies
     local ef = workspace:FindFirstChild("enemies") or (workspace:FindFirstChild("dungeon") and workspace.dungeon:FindFirstChild("enemies", true))
     if ef then
         for _, m in ipairs(ef:GetChildren()) do
@@ -733,7 +770,6 @@ local function evaluateDungeonBossState()
         anyEnemyAlive = false
     end
 
-    -- Chỉ xác nhận Boss đã chết khi: Boss đã từng xuất hiện sống (hoặc bảng kết thúc trận đã hiện), hiện tại Boss đã chết VÀ không còn quái sống!
     if bossConfirmedAliveOnce and not bossAlive and not anyEnemyAlive then
         if not bossDeadAt then
             bossDeadAt = os.clock()
@@ -762,9 +798,11 @@ hbConn = RunService.Heartbeat:Connect(function()
         return
     end
 
-    CFG.streamerLevel = false
-    CFG.modDetect     = false
-    CFG.modKick       = false
+    CFG.streamerLevel       = false
+    CFG.streamerOthers      = false
+    CFG.streamerLeaderboard = false
+    CFG.modDetect           = false
+    CFG.modKick             = false
 
     if CUSTOM.AUTO_MAP_BY_MIN_LVL then
         CFG.autoQueueMap        = targetMap
@@ -779,7 +817,6 @@ hbConn = RunService.Heartbeat:Connect(function()
         CFG.autoQueue       = true
         CFG.autoQueueReplay = false
     else
-        -- Khi đang ở trong Dungeon: Khóa cứng autoQueue = false để không bao giờ bị văng ra tạo phòng mới!
         CFG.autoQueue = false
         if CUSTOM.ANTI_EARLY_REPLAY then
             if currentRunState == "LOOT_DONE" and not needLeaveForUpgrade then
@@ -794,7 +831,7 @@ hbConn = RunService.Heartbeat:Connect(function()
 end)
 
 -- =====================================================================
--- 7. AUTO RE-EXECUTE & RE-HOP AN TOÀN
+-- 7. AUTO RE-EXECUTE, LƯU SETTING KHI TELEPORT & RE-HOP AN TOÀN
 -- =====================================================================
 local function registerAutoReExecute()
     if not CUSTOM.AUTO_REEXECUTE then return false end
@@ -824,14 +861,8 @@ end
 registerAutoReExecute()
 
 LocalPlayer.OnTeleport:Connect(function()
-    if not isInDungeon() then
-        CUSTOM.ENTERED_MAP  = targetMap
-        CUSTOM.ENTERED_DIFF = targetDiff
-    end
-    saveHubConfig()
-    if CUSTOM.AUTO_MAP_BY_MIN_LVL then
-        writeMapAndDiffToHarvardJson(targetMap, targetDiff)
-    end
+    -- Lưu toàn bộ Setting và Map/Độ khó hiện tại ngay khi bắt đầu chuyển Map
+    saveAllSettings(targetMap, targetDiff)
     registerAutoReExecute()
 end)
 
@@ -840,12 +871,9 @@ local function triggerRehop(reason)
     if isRehopping then return end
     local targetLobbyId = resolveRebornLobbyPlaceId()
     isRehopping = true
-    warn(("[Boost][DQ Reborn] Đang chuyển về Sảnh (PlaceId: %s) | Lý do: %s"):format(tostring(targetLobbyId), tostring(reason)))
+    warn(("[Boost][DQ Reborn] Đang lưu Setting & chuyển về Sảnh (PlaceId: %s) | Lý do: %s"):format(tostring(targetLobbyId), tostring(reason)))
 
-    saveHubConfig()
-    if CUSTOM.AUTO_MAP_BY_MIN_LVL then
-        writeMapAndDiffToHarvardJson(targetMap, targetDiff)
-    end
+    saveAllSettings(targetMap, targetDiff)
     registerAutoReExecute()
 
     task.spawn(function()
@@ -1044,8 +1072,8 @@ local function addHubToggle(yPos, label, key, callback)
     btn.MouseButton1Click:Connect(function()
         CUSTOM[key] = not CUSTOM[key]
         syncVisual()
-        saveHubConfig()
         applySkillAndBoostSettings()
+        saveAllSettings(targetMap, targetDiff)
         if callback then callback(CUSTOM[key]) end
     end)
 
@@ -1068,10 +1096,10 @@ rehopBtn.BackgroundColor3 = Color3.fromRGB(95, 22, 30)
 rehopBtn.TextColor3 = Color3.fromRGB(255, 235, 235)
 rehopBtn.Font = Enum.Font.GothamBold
 rehopBtn.TextSize = 11
-rehopBtn.Text = "Về Sảnh DQ Reborn Ngay"
+rehopBtn.Text = "Lưu Setting & Về Sảnh DQ Reborn"
 Instance.new("UICorner", rehopBtn).CornerRadius = UDim.new(0, 6)
 rehopBtn.MouseButton1Click:Connect(function()
-    triggerRehop("Bấm Về Sảnh thủ công trên Hub")
+    triggerRehop("Bấm Lưu & Về Sảnh thủ công trên Hub")
 end)
 
 if not harvardWindow then
@@ -1083,11 +1111,11 @@ if not harvardWindow then
 end
 
 -- =====================================================================
--- 9. VÒNG LẶP ĐỒNG BỘ TRẠNG THÁI (KHÔNG TỰ VĂNG KHI ĐANG ĐÁNH DUNGEON)
+-- 9. VÒNG LẶP ĐỒNG BỘ LEVEL THẤP NHẤT & LƯU SETTING KHI ĐỔI MAP/ĐỘ KHÓ
 -- =====================================================================
 task.spawn(function()
     local lobbyStart = os.clock()
-    local lastSyncedSig = ""
+    local lastSavedSig = ""
 
     while not RT.destroyed do
         if not harvardWindow or not harvardWindow.Parent then
@@ -1101,19 +1129,23 @@ task.spawn(function()
         end
 
         local minLvl, ownerName = getLowestAccountLevel()
-        local bestMap, bestDiff, reqLvl = selectBestDungeonForLevel(minLvl)
+        local bestMap, bestDiff, reqLvl, bestTierIdx = selectBestDungeonForLevel(minLvl)
         currentMinLvl, currentMinOwner = minLvl, ownerName
-        targetMap, targetDiff, targetReq = bestMap, bestDiff, reqLvl
+        targetMap, targetDiff, targetReq, targetTierIdx = bestMap, bestDiff, reqLvl, bestTierIdx
 
+        -- Mỗi khi có sự thay đổi Map hoặc Độ khó mục tiêu -> Cập nhật vào CFG và LƯU SETTING NGAY LẬP TỨC!
         if CUSTOM.AUTO_MAP_BY_MIN_LVL then
-            local sig = bestMap .. "|" .. bestDiff
-            if sig ~= lastSyncedSig then
-                lastSyncedSig = sig
+            local sig = ("%s|%s"):format(tostring(bestMap), tostring(bestDiff))
+            if sig ~= lastSavedSig then
+                lastSavedSig = sig
                 CFG.autoQueueMap        = bestMap
                 CFG.autoQueueDifficulty = bestDiff
-                writeMapAndDiffToHarvardJson(bestMap, bestDiff)
-                if type(context.saveConfig) == "function" then pcall(context.saveConfig) end
+                CFG.autoQueueHardcore   = CUSTOM.FORCE_HARDCORE
+                CFG.autoQueuePrivate    = CUSTOM.FORCE_PRIVATE
+                saveAllSettings(bestMap, bestDiff)
                 if type(context.refreshAll) == "function" then pcall(context.refreshAll) end
+                print(("[Boost][AutoSave] Đã lưu Map/Độ khó mới: %s [%s - Req Lv.%d] (Min Lvl: %d - %s)")
+                    :format(tostring(bestMap), tostring(bestDiff), reqLvl, minLvl, tostring(ownerName)))
             end
         end
 
@@ -1123,11 +1155,8 @@ task.spawn(function()
         if currentRunState == "LOBBY" and not lockedInDungeon then
             resolveRebornLobbyPlaceId()
             needLeaveForUpgrade = false
-            if CUSTOM.ENTERED_MAP ~= bestMap or CUSTOM.ENTERED_DIFF ~= bestDiff then
-                CUSTOM.ENTERED_MAP  = bestMap
-                CUSTOM.ENTERED_DIFF = bestDiff
-                saveHubConfig()
-            end
+            dungeonBaselineMinLvl  = nil
+            dungeonBaselineTierIdx = nil
             statusStr = ("Sảnh -> Tạo: %s [%s]"):format(tostring(bestMap), tostring(bestDiff))
 
             if CUSTOM.AUTO_REHOP and CUSTOM.LOBBY_STUCK_TIMEOUT then
@@ -1138,13 +1167,22 @@ task.spawn(function()
             end
         else
             lobbyStart = os.clock()
+            -- Ghi nhận mốc Level thấp nhất khi các acc phụ vừa tải xong vào trong Dungeon
+            if not dungeonBaselineMinLvl or minLvl < dungeonBaselineMinLvl then
+                dungeonBaselineMinLvl  = minLvl
+                dungeonBaselineTierIdx = bestTierIdx
+            end
+
+            -- Chỉ kích hoạt về Sảnh nâng Độ khó/Map khi acc thấp nhất trong Dungeon vừa LÊN CẤP vượt qua mốc Tier ban đầu lúc vào Dungeon!
             needLeaveForUpgrade = CUSTOM.AUTO_MAP_BY_MIN_LVL
-                and ((bestMap ~= CUSTOM.ENTERED_MAP) or (bestDiff ~= CUSTOM.ENTERED_DIFF))
+                and dungeonBaselineTierIdx ~= nil
+                and (bestTierIdx > dungeonBaselineTierIdx)
 
             if currentRunState == "LOOT_DONE" then
                 if needLeaveForUpgrade then
-                    statusStr = ("Đã thắng & đủ Lv.%d lên [%s - %s] -> Về Sảnh!"):format(minLvl, tostring(bestMap), tostring(bestDiff))
-                    triggerRehop(("Hoàn thành trận & nâng lên [%s - %s]"):format(tostring(bestMap), tostring(bestDiff)))
+                    statusStr = ("Lên Lv.%d -> Về Sảnh nâng [%s - %s]!"):format(minLvl, tostring(bestMap), tostring(bestDiff))
+                    saveAllSettings(bestMap, bestDiff)
+                    triggerRehop(("Acc thấp nhất lên Lv.%d -> Nâng lên [%s - %s]"):format(minLvl, tostring(bestMap), tostring(bestDiff)))
                     break
                 else
                     statusStr = "Đã lấy Drop -> Đang Replay tiếp!"
@@ -1158,11 +1196,12 @@ task.spawn(function()
             end
         end
 
-        infoBox.Text = ("Min Lvl: %d (%s)\nĐang đi: %s [%s]\nMục tiêu: %s [%s - Req Lv.%d]\n%s"):format(
+        infoBox.Text = ("Min Lvl: %d (%s) | Quét: %s\nMap đã lưu: %s [%s]\nMục tiêu: %s [%s - Req Lv.%d]\n%s"):format(
             currentMinLvl,
-            tostring(currentMinOwner):sub(1, 10),
-            tostring(CUSTOM.ENTERED_MAP or targetMap),
-            tostring(CUSTOM.ENTERED_DIFF or targetDiff),
+            tostring(currentMinOwner):sub(1, 12),
+            CUSTOM.ONLY_MY_ACCOUNT and "Chỉ mình" or "Tất cả Acc",
+            tostring(CUSTOM.SAVED_MAP or targetMap),
+            tostring(CUSTOM.SAVED_DIFF or targetDiff),
             tostring(targetMap),
             tostring(targetDiff),
             targetReq,
@@ -1218,8 +1257,8 @@ task.spawn(function()
     end
 end)
 
-print(("[Boost DQ Reborn] Đã sửa lỗi văng Lobby | Min Lvl: %d -> %s [%s - Req Lv.%d]")
-    :format(currentMinLvl, tostring(targetMap), tostring(targetDiff), targetReq))
+print(("[Boost DQ Reborn] Đã nạp | Quét Tất Cả Acc | Min Lvl: %d (%s) -> %s [%s - Req Lv.%d]")
+    :format(currentMinLvl, tostring(currentMinOwner), tostring(targetMap), tostring(targetDiff), targetReq))
 ]=====]
 
 local fullSelfFile = "local WRAPPER_SOURCE = [=====[" .. WRAPPER_SOURCE .. "]=====]\n"
