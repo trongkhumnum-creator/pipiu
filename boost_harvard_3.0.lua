@@ -1,22 +1,23 @@
 -- =====================================================================
--- Harvard Labs v3.0 — DQ Reborn (Core Always-On + Clean Native Hub)
+-- Harvard Labs v3.0 — DQ Reborn (Fixed Buff->Damage Combo + Native Hub)
 -- =====================================================================
 
 local WRAPPER_SOURCE = [=====[
 local ORIGINAL_URL = "https://raw.githubusercontent.com/trongkhumnum-creator/pipiu/refs/heads/main/leaked_harvard_3.0"
 
--- ============ Bảng Tùy Chỉnh (Chỉ giữ các thông số & công tắc cần thiết) ====
+-- ============ Bảng Tùy Chỉnh =========================================
 local CUSTOM = {
-    BOOST                 = 1.36,   -- Hệ số nhân tầm đánh / bán kính kỹ năng
+    BOOST                 = 1.5,   -- Hệ số nhân tầm đánh / bán kính kỹ năng
     DETECT_HOLD           = 0.35,  -- Thời gian giữ mục tiêu trong bộ nhớ đệm (giây)
     CACHE_HZ              = 15,    -- Tần suất quét mục tiêu mỗi giây
     LOOT_WAIT_TIME        = 6,     -- Số giây bắt buộc chờ nhận Drop sau khi Boss chết
-    BUFF_DURATION_WINDOW  = 4.85,  -- Cửa sổ hiệu lực an toàn của Inner Rage / Inner Focus (trên 5.0s chuẩn)
+    BUFF_DURATION         = 5.0,   -- Thời gian hiệu lực chuẩn của Inner Rage / Inner Focus (5 giây)
+    BUFF_CAST_DELAY       = 0.15,  -- Độ trễ nhỏ sau khi bấm Buff để Server nhận diện Buff trước khi nổ Skill dmg
     FORCE_HARDCORE        = false,
     FORCE_PRIVATE         = true,
-    LOBBY_STUCK_TIMEOUT   = 120,   -- Quá 120s kẹt ở Sảnh sẽ tự Re-hop
+    LOBBY_STUCK_TIMEOUT   = 120,
 
-    -- Các tính năng có thể Bật / Tắt trên Hub Harvard Labs:
+    -- Các tính năng có thể Bật / Tắt trong Hub Harvard Labs:
     AUTO_REEXECUTE        = true,  -- Tự động chạy lại Script khi chuyển Map / vào Dungeon
     AUTO_REHOP            = true,  -- Tự động kết nối lại / về Sảnh khi mất kết nối hoặc kẹt
     DRAW_HUD              = true,  -- Hiển thị vòng tròn tầm đánh dưới chân
@@ -100,7 +101,8 @@ local function saveAllSettings(targetMap, targetDiff)
             decoded.modKick             = false
             decoded.mobAttackNeedsBuff  = true
             decoded.attackNeedsBuffUp   = true
-            decoded.buffHolderCheck     = true
+            decoded.buffHolderCheck     = false
+            decoded.buffSpeedCheck      = false
             if CUSTOM.SAVED_MAP and CUSTOM.SAVED_DIFF then
                 decoded.autoQueue           = true
                 decoded.autoQueueMap        = CUSTOM.SAVED_MAP
@@ -114,7 +116,7 @@ local function saveAllSettings(targetMap, targetDiff)
     end
 end
 
--- Dọn sạch mọi GUI rời bên ngoài từ các bản trước
+-- Dọn sạch mọi GUI rời bên ngoài
 local function purgeAllExternalHubs()
     local roots = {}
     if type(gethui) == "function" then pcall(function() roots[#roots + 1] = gethui() end) end
@@ -337,7 +339,6 @@ for _, plr in ipairs(Players:GetPlayers()) do
     readPlayerLevelRaw(plr)
 end
 
--- Luôn quét toàn bộ tài khoản hiện có để tìm Account có Level thấp nhất (Đã bỏ hoàn toàn ONLY_MY_ACCOUNT)
 local function getLowestAccountLevel()
     local minLvl = math.huge
     local minOwner = LocalPlayer.Name
@@ -400,7 +401,6 @@ if not source then
     error("[Boost] Không thể tải script gốc. Hãy kiểm tra lại ORIGINAL_URL hoặc quyền HTTP của Executor.")
 end
 
--- Tắt chế độ giả Level 999 trên bảng tên & Leaderboard để luôn đọc chuẩn Level của acc phụ
 source = source:gsub("streamerLevel = true", "streamerLevel = false")
 source = source:gsub("streamerOthers = true", "streamerOthers = false")
 source = source:gsub("streamerLeaderboard = true", "streamerLeaderboard = false")
@@ -435,7 +435,7 @@ local CFG, RT = context.CFG, context.RT
 _G = _G or {}; getgenv = getgenv or function() return _G end
 
 -- =====================================================================
--- 4. ÁP DỤNG BOOST & ÉP BẮT BUỘC ĐỒNG BỘ SKILL THEO BUFF
+-- 4. SỬA LỖI KẸT SKILL DAMAGE SAU KHI BẬT BUFF TRONG HARVARD LABS
 -- =====================================================================
 if type(context.autoClass) == "function" then pcall(context.autoClass, true) end
 if type(context.applyClassProfile) == "function" then
@@ -476,13 +476,23 @@ local function applyMandatoryAndBoostSettings()
     CFG.autoAttack    = true
     RT.farmEnabled    = true
 
-    -- BẮT BUỘC: Chỉ cho phép tung Skill sát thương khi đang có Buff (Inner Rage / Inner Focus - 5s Duration, 6s Cooldown)
-    CFG.buffDuration        = 5
-    CFG.buffCooldown        = 6
-    CFG.mobAttackNeedsBuff  = true
-    CFG.attackNeedsBuffUp   = true
-    CFG.buffHolderCheck     = true
-    CFG.buffHolderGrace     = 0.35
+    -- QUAN TRỌNG:
+    -- 1. Giữ mobAttackNeedsBuff = true & attackNeedsBuffUp = true để Harvard Labs luôn ưu tiên bật Buff trước.
+    -- 2. TẮT buffHolderCheck = false & buffSpeedCheck = false vì trong DQ Reborn, hiệu ứng particle và tốc độ chạy khác với DQ cũ (nếu để true thì sau 0.6s script gốc tưởng mất Buff và khóa vĩnh viễn Skill gây sát thương!).
+    -- 3. TẮT các cờ bắt chờ gom đủ 100% quái (firstCastWholeStrict, fireOnFullCover) để khi Buff vừa lên là Carry xả ngay Skill sát thương trong 5 giây hiệu lực!
+    CFG.buffDuration         = 5
+    CFG.buffCooldown         = 6
+    CFG.mobAttackNeedsBuff   = true
+    CFG.attackNeedsBuffUp    = true
+    CFG.buffHolderCheck      = false
+    CFG.buffSpeedCheck       = false
+    CFG.attackOnlyWithSpeed  = false
+    CFG.firstCastWholeStrict = false
+    CFG.groupFirstWhole      = false
+    CFG.firstHitWhole        = false
+    CFG.fireOnFullCover      = false
+    CFG.strikeWaitReady      = false
+    CFG.groupArriveReady     = false
 
     for _, k in ipairs(KEYS) do
         if type(baseValues[k]) == "number" then
@@ -504,7 +514,7 @@ end
 if type(context.PERSIST) == "table" then
     for i = #context.PERSIST, 1, -1 do
         local k = context.PERSIST[i]
-        if k == "aoeDistance" then
+        if k == "aoeDistance" or k == "buffHolderCheck" or k == "buffSpeedCheck" then
             table.remove(context.PERSIST, i)
         else
             for _, rk in ipairs(KEYS) do
@@ -539,7 +549,7 @@ if type(context.loadConfig) == "function" then
 end
 
 -- =====================================================================
--- 5. BỘ KIỂM TRA BẮT BUỘC HIỆU LỰC "INNER RAGE" / "INNER FOCUS" (5 GIÂY)
+-- 5. BỘ ĐỒNG BỘ COMBO: BUFF (INNER RAGE / FOCUS) -> XẢ SKILL DAMAGE TRONG 5 GIÂY
 -- =====================================================================
 local BUFF_SPELL_NAMES = {
     ["inner focus"]          = true,
@@ -548,35 +558,39 @@ local BUFF_SPELL_NAMES = {
     ["enhanced inner rage"]  = true,
 }
 
-local lastBuffActivatedAt = -math.huge
-
-local function isSlotBuffSkill(slot)
-    if context.isBuffSlot then
+-- Kiểm tra chính xác một slot ("Q", "E", 1, 2) có phải là chiêu Buff hay không
+local function checkIsBuffSlot(slot)
+    if type(context.isBuffSlot) == "function" then
         local ok, res = pcall(context.isBuffSlot, slot)
         if ok and res == true then return true end
+        if slot == "Q" or slot == "q" then
+            local ok1, r1 = pcall(context.isBuffSlot, 1)
+            if ok1 and r1 == true then return true end
+        elseif slot == "E" or slot == "e" then
+            local ok2, r2 = pcall(context.isBuffSlot, 2)
+            if ok2 and r2 == true then return true end
+        end
     end
-    local slotStr = string.upper(tostring(slot or ""))
-    local char = LocalPlayer.Character
-    local bp   = LocalPlayer:FindFirstChild("Backpack")
-    for _, container in ipairs({ char, bp }) do
-        if container then
-            for _, item in ipairs(container:GetChildren()) do
-                local itemName = string.lower(item.Name)
-                if BUFF_SPELL_NAMES[itemName] then
-                    local itemSlot = item:GetAttribute("Slot") or item:GetAttribute("Key") or (item:FindFirstChild("slot") and item.slot.Value)
-                    if itemSlot and string.upper(tostring(itemSlot)) == slotStr then
+
+    local slotUpper = string.upper(tostring(slot or ""))
+    if slotUpper == "1" then slotUpper = "Q" elseif slotUpper == "2" then slotUpper = "E" end
+
+    -- Quét trong PlayerGui (thanh kỹ năng Q / E) và Backpack / Character
+    local pgui = LocalPlayer:FindFirstChild("PlayerGui")
+    if pgui then
+        for _, desc in ipairs(pgui:GetDescendants()) do
+            if desc:IsA("TextLabel") or desc:IsA("StringValue") then
+                local val = string.lower(desc:IsA("TextLabel") and desc.Text or desc.Value)
+                if BUFF_SPELL_NAMES[val] then
+                    local parentName = desc.Parent and string.upper(desc.Parent.Name) or ""
+                    local grandName  = desc.Parent and desc.Parent.Parent and string.upper(desc.Parent.Parent.Name) or ""
+                    if parentName:find(slotUpper, 1, true) or grandName:find(slotUpper, 1, true) then
                         return true
                     end
                 end
             end
         end
     end
-    return false
-end
-
-local function detectEquippedBuffKey()
-    if isSlotBuffSkill("Q") or isSlotBuffSkill(1) then return Enum.KeyCode.Q, "Q" end
-    if isSlotBuffSkill("E") or isSlotBuffSkill(2) then return Enum.KeyCode.E, "E" end
 
     local char = LocalPlayer.Character
     local bp   = LocalPlayer:FindFirstChild("Backpack")
@@ -584,86 +598,97 @@ local function detectEquippedBuffKey()
         if container then
             for _, item in ipairs(container:GetChildren()) do
                 if BUFF_SPELL_NAMES[string.lower(item.Name)] then
-                    if context.buffSlot then
-                        local bs = string.upper(tostring(context.buffSlot))
-                        if bs == "Q" then return Enum.KeyCode.Q, "Q" end
-                        if bs == "E" then return Enum.KeyCode.E, "E" end
+                    local s = item:GetAttribute("Slot") or item:GetAttribute("Key") or (item:FindFirstChild("slot") and item.slot.Value)
+                    if s and string.upper(tostring(s)) == slotUpper then
+                        return true
                     end
-                    return Enum.KeyCode.E, "E"
                 end
             end
         end
     end
-    return nil, nil
+
+    return false
 end
 
-local function hasBuffParticleOnCharacter()
+-- Tìm xem phím nào ("Q" hay "E") đang chứa kỹ năng Buff, và phím còn lại là kỹ năng Damage
+local function getBuffAndDamageSlots()
+    if checkIsBuffSlot("Q") then
+        return "Q", Enum.KeyCode.Q, "E", Enum.KeyCode.E
+    end
+    if checkIsBuffSlot("E") then
+        return "E", Enum.KeyCode.E, "Q", Enum.KeyCode.Q
+    end
+    return nil, nil, nil, nil
+end
+
+local lastBuffTimestamp = -math.huge
+local prevLastQ = tonumber(RT.lastQ) or -math.huge
+local prevLastE = tonumber(RT.lastE) or -math.huge
+
+-- Cập nhật thời điểm vừa tung Buff dựa trên RT.lastQ / RT.lastE của Harvard Labs & Particle trong Workspace
+local function updateBuffTimerState()
+    local now = os.clock()
+    local buffSlot, _, _, _ = getBuffAndDamageSlots()
+
+    local curQ = tonumber(RT.lastQ) or -math.huge
+    local curE = tonumber(RT.lastE) or -math.huge
+
+    if buffSlot == "Q" and curQ > prevLastQ and curQ <= now then
+        lastBuffTimestamp = curQ
+    elseif buffSlot == "E" and curE > prevLastE and curE <= now then
+        lastBuffTimestamp = curE
+    elseif buffSlot == nil then
+        -- Ngay cả khi chưa nhận diện được slot qua tên, nếu 1 trong 2 phím vừa được Harvard Labs bấm làm phím mở đầu:
+        if curQ > prevLastQ and (now - curE > 1.0) and (now - lastBuffTimestamp > 5.0) then
+            lastBuffTimestamp = curQ
+        elseif curE > prevLastE and (now - curQ > 1.0) and (now - lastBuffTimestamp > 5.0) then
+            lastBuffTimestamp = curE
+        end
+    end
+
+    prevLastQ = curQ
+    prevLastE = curE
+
+    -- Kiểm tra thêm nếu có hiệu ứng particle holder xuất hiện trong Workspace / SpellProjectile / Character
     local char = LocalPlayer.Character
-    if not char then return false end
-
-    for _, desc in ipairs(char:GetDescendants()) do
-        local n = string.lower(desc.Name)
-        if n == "inner focus particle holder"
-            or n == "inner rage particle holder"
-            or n:find("inner focus", 1, true)
-            or n:find("inner rage", 1, true)
-        then
-            if desc:IsA("ParticleEmitter") then
-                if desc.Enabled then return true end
-            else
-                return true
+    local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        for _, container in ipairs({ char, workspace:FindFirstChild("SpellProjectile"), workspace }) do
+            if container then
+                for _, child in ipairs(container:GetChildren()) do
+                    local n = string.lower(child.Name)
+                    if n:find("inner focus", 1, true) or n:find("inner rage", 1, true) then
+                        if (now - lastBuffTimestamp) > CUSTOM.BUFF_DURATION then
+                            lastBuffTimestamp = now
+                        end
+                        break
+                    end
+                end
             end
         end
     end
-
-    for _, child in ipairs(workspace:GetChildren()) do
-        local n = string.lower(child.Name)
-        if n == "inner focus particle holder" or n == "inner rage particle holder" then
-            local hrp = char:FindFirstChild("HumanoidRootPart")
-            if hrp and child:IsA("BasePart") and (child.Position - hrp.Position).Magnitude < 12 then
-                return true
-            end
-        end
-    end
-
-    return false
 end
 
-local function hookCharacterBuffTracker(char)
-    if not char then return end
-    char.DescendantAdded:Connect(function(desc)
-        local n = string.lower(desc.Name)
-        if n:find("inner focus", 1, true) or n:find("inner rage", 1, true) then
-            lastBuffActivatedAt = os.clock()
-        end
-    end)
-end
-
-if LocalPlayer.Character then hookCharacterBuffTracker(LocalPlayer.Character) end
-LocalPlayer.CharacterAdded:Connect(hookCharacterBuffTracker)
-
+-- Kiểm tra xem hiện tại có đang nằm trong 5.0 giây hiệu lực của Inner Rage / Inner Focus không
 local function isDamageBuffActive()
-    if hasBuffParticleOnCharacter() then
-        if os.clock() - lastBuffActivatedAt > 5.2 then
-            lastBuffActivatedAt = os.clock()
-        end
-        return true
+    updateBuffTimerState()
+    local now = os.clock()
+    local elapsed = now - lastBuffTimestamp
+
+    -- Đang nằm trong khoảng hiệu lực 5.0 giây (tính từ khi bấm Buff)
+    if elapsed >= 0 and elapsed <= CUSTOM.BUFF_DURATION then
+        return true, (CUSTOM.BUFF_DURATION - elapsed)
     end
-    if (os.clock() - lastBuffActivatedAt) <= CUSTOM.BUFF_DURATION_WINDOW then
-        return true
+
+    if type(RT.buffUntil) == "number" and now < RT.buffUntil then
+        return true, (RT.buffUntil - now)
     end
-    if type(RT.buffUntil) == "number" and os.clock() < RT.buffUntil then
-        return true
-    end
-    if type(context.buffUp) == "function" then
-        local ok, up = pcall(context.buffUp)
-        if ok and up == true then return true end
-    end
-    return false
+
+    return false, 0
 end
 
 -- =====================================================================
--- 6. QUÉT QUÁI & CHẶN CỨNG SKILL SÁT THƯƠNG KHI CHƯA CÓ BUFF (BẮT BUỘC)
+-- 6. QUÉT QUÁI, CHẶN GATE & CHỦ ĐỘNG XẢ SKILL DAMAGE NGAY KHI CÓ BUFF
 -- =====================================================================
 local cacheAt, cacheOK, cacheTgt = 0, false, nil
 local lastHitAt, lastTgt = 0, nil
@@ -740,49 +765,97 @@ local function detection()
     return ok, t
 end
 
--- BẮT BUỘC: Chặn toàn bộ Skill sát thương nếu Inner Rage / Inner Focus chưa kích hoạt
+-- Hàm Gate kiểm soát tung chiêu:
+-- 1. Nếu là chiêu Buff -> Cho phép tung ngay lập tức và ghi nhận mốc thời gian 5.0 giây.
+-- 2. Nếu là chiêu Damage -> Chỉ cho phép tung khi đang nằm trong 5.0 giây hiệu lực của Buff!
 local function gate(fn)
     if type(fn) ~= "function" then return fn end
     return function(slot, ...)
-        if isSlotBuffSkill(slot) then
+        if checkIsBuffSlot(slot) then
+            local ok = fn(slot, ...)
+            if ok then
+                lastBuffTimestamp = os.clock()
+            end
+            return ok
+        end
+
+        local buffSlot, _, _, _ = getBuffAndDamageSlots()
+        if buffSlot ~= nil then
+            local active, _ = isDamageBuffActive()
+            if not active then
+                -- Chưa có hiệu lực Buff -> Chặn chiêu sát thương để đợi bật Buff trước!
+                return false
+            end
+            -- Đang có hiệu lực Buff -> Cho phép chiêu sát thương nổ ngay!
             return fn(slot, ...)
         end
-        local buffKey, _ = detectEquippedBuffKey()
-        if buffKey ~= nil and not isDamageBuffActive() then
-            return false
-        end
+
         return fn(slot, ...)
     end
 end
 if type(context.gsSlotReady) == "function" then context.gsSlotReady = gate(context.gsSlotReady) end
 if type(context.slotReady) == "function" then context.slotReady = gate(context.slotReady) end
 
--- Luồng tự động kích hoạt Buff trước rồi mới xả Skill sát thương trong thời gian hiệu lực 5 giây
+-- Luồng thực thi Combo tự động:
+-- Bước 1: Khi thấy quái trong tầm mà chưa có Buff -> Bấm phím Buff và mở cửa sổ 5.0 giây.
+-- Bước 2: Ngay khi đang trong 5.0 giây hiệu lực của Buff -> Chủ động bấm phím Skill gây sát thương!
 task.spawn(function()
+    local lastAssistAtkAt = 0
     while not RT.destroyed do
-        task.wait(0.18)
+        task.wait(0.12)
         if RT.farmEnabled and isInDungeon() then
             local hasTarget, tgt = detection()
             if hasTarget and tgt then
-                local buffKeyCode, buffSlotStr = detectEquippedBuffKey()
-                local buffActive = isDamageBuffActive()
+                local now = os.clock()
+                local buffSlot, buffKeyCode, dmgSlot, dmgKeyCode = getBuffAndDamageSlots()
+                local buffActive, _ = isDamageBuffActive()
 
-                if buffKeyCode then
+                if buffSlot and buffKeyCode and dmgKeyCode then
                     if not buffActive then
-                        pcall(function()
-                            VirtualInputManager:SendKeyEvent(true, buffKeyCode, false, game)
-                            task.wait(0.02)
-                            VirtualInputManager:SendKeyEvent(false, buffKeyCode, false, game)
-                        end)
-                    else
-                        local atkKeyCode = (buffSlotStr == "Q") and Enum.KeyCode.E or Enum.KeyCode.Q
-                        local now = os.clock()
-                        local lastAtk = (atkKeyCode == Enum.KeyCode.Q) and (tonumber(RT.lastQ) or 0) or (tonumber(RT.lastE) or 0)
-                        if now - lastAtk > 0.55 then
+                        -- Nếu đã qua thời gian hồi chiêu Buff (6.0s), bấm phím Buff và kích hoạt cửa sổ 5.0s
+                        if (now - lastBuffTimestamp) >= 5.8 then
+                            lastBuffTimestamp = now
                             pcall(function()
-                                VirtualInputManager:SendKeyEvent(true, atkKeyCode, false, game)
+                                VirtualInputManager:SendKeyEvent(true, buffKeyCode, false, game)
                                 task.wait(0.02)
-                                VirtualInputManager:SendKeyEvent(false, atkKeyCode, false, game)
+                                VirtualInputManager:SendKeyEvent(false, buffKeyCode, false, game)
+                            end)
+                        end
+                    else
+                        -- Đang trong 5.0 giây hiệu lực của Buff!
+                        -- Chờ 0.15s đầu để Buff kịp nhận trên Server, sau đó xả ngay phím Skill gây sát thương!
+                        local sinceBuff = now - lastBuffTimestamp
+                        local lastDmgCast = (dmgSlot == "Q") and (tonumber(RT.lastQ) or 0) or (tonumber(RT.lastE) or 0)
+                        if sinceBuff >= CUSTOM.BUFF_CAST_DELAY
+                            and (now - lastDmgCast > 0.35)
+                            and (now - lastAssistAtkAt > 0.35)
+                        then
+                            lastAssistAtkAt = now
+                            pcall(function()
+                                VirtualInputManager:SendKeyEvent(true, dmgKeyCode, false, game)
+                                task.wait(0.02)
+                                VirtualInputManager:SendKeyEvent(false, dmgKeyCode, false, game)
+                            end)
+                        end
+                    end
+                else
+                    -- Trường hợp nhân vật không trang bị Inner Rage / Inner Focus (cả Q và E đều là chiêu đánh)
+                    if buffActive and (now - lastAssistAtkAt > 0.4) then
+                        lastAssistAtkAt = now
+                        local qTime = tonumber(RT.lastQ) or 0
+                        local eTime = tonumber(RT.lastE) or 0
+                        -- Nếu Harvard vừa bấm Q làm Buff, bấm bồi E làm Damage (và ngược lại)
+                        if (now - qTime) < 4.8 and (now - eTime) > 0.6 then
+                            pcall(function()
+                                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.E, false, game)
+                                task.wait(0.02)
+                                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+                            end)
+                        elseif (now - eTime) < 4.8 and (now - qTime) > 0.6 then
+                            pcall(function()
+                                VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Q, false, game)
+                                task.wait(0.02)
+                                VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Q, false, game)
                             end)
                         end
                     end
@@ -890,7 +963,6 @@ local function evaluateDungeonBossState()
     return "CLEARING_MOBS", 0
 end
 
--- Khóa cứng cả 3 cơ chế bắt buộc trên từng frame Heartbeat
 local hbConn
 hbConn = RunService.Heartbeat:Connect(function()
     if RT.destroyed then
@@ -898,18 +970,21 @@ hbConn = RunService.Heartbeat:Connect(function()
         return
     end
 
+    updateBuffTimerState()
+
     CFG.streamerLevel       = false
     CFG.streamerOthers      = false
     CFG.streamerLeaderboard = false
     CFG.modDetect           = false
     CFG.modKick             = false
 
-    -- 1) Bắt buộc chỉ đánh Skill khi có Buff
+    -- Giữ ưu tiên bật Buff trước, nhưng TẮT buffHolderCheck & buffSpeedCheck để không bị khóa Skill Damage!
     CFG.mobAttackNeedsBuff  = true
     CFG.attackNeedsBuffUp   = true
-    CFG.buffHolderCheck     = true
+    CFG.buffHolderCheck     = false
+    CFG.buffSpeedCheck      = false
 
-    -- 2) Bắt buộc chọn Map & Độ khó theo Min Level
+    -- Bắt buộc chọn Map & Độ khó theo Min Level
     CFG.autoQueueMap        = targetMap
     CFG.autoQueueDifficulty = targetDiff
     CFG.autoQueueMinLevel   = 0
@@ -917,7 +992,7 @@ hbConn = RunService.Heartbeat:Connect(function()
     CFG.autoQueuePrivate    = CUSTOM.FORCE_PRIVATE
     CFG.autoStartDungeon    = true
 
-    -- 3) Bắt buộc chống Replay sớm trước khi Boss chết & nhận xong Drop
+    -- Bắt buộc chống Replay sớm trước khi Boss chết & nhận xong Drop
     if not isInDungeon() then
         CFG.autoQueue       = true
         CFG.autoQueueReplay = false
@@ -1231,7 +1306,6 @@ local function injectNativeSectionCard(scrollContainer)
         refreshSwitch()
     end
 
-    -- Chỉ để lại đúng 3 công tắc tiện ích cần Bật/Tắt (Còn AutoMap Min Lvl, Khóa Skill theo Buff & Chống Replay sớm đã bắt buộc chạy ngầm 100%)
     addNativeOptionRow(42,  "Auto Re-Execute (Tự chạy lại Script khi chuyển Map / vào Dungeon)", "AUTO_REEXECUTE", function(v)
         if v then registerAutoReExecute() end
     end)
@@ -1381,19 +1455,23 @@ task.spawn(function()
         end
 
         if nativeStatusLabel then
-            local buffStateTxt = isDamageBuffActive() and "ĐANG CÓ BUFF (Xả Skill)" or "CHỜ BUFF (Khóa Skill)"
-            nativeStatusLabel.Text = ("Min Lvl: %d (%s) -> Map tự chọn: %s [%s - Req Lv.%d]\nBuff Inner Rage/Focus: %s | Tiến độ: %s"):format(
+            local buffActive, buffRem = isDamageBuffActive()
+            local bSlot, _, dSlot, _ = getBuffAndDamageSlots()
+            local slotInfo = bSlot and ("Buff:%s/Dmg:%s"):format(bSlot, dSlot) or "Auto"
+            local buffStateTxt = buffActive and ("ĐANG CÓ BUFF (%.1fs) -> Xả Skill!"):format(buffRem) or "CHỜ BUFF (Khóa Skill Dmg)"
+            nativeStatusLabel.Text = ("Min Lvl: %d (%s) -> Map: %s [%s - Req Lv.%d]\n[%s] %s | %s"):format(
                 currentMinLvl,
-                tostring(currentMinOwner):sub(1, 14),
+                tostring(currentMinOwner):sub(1, 12),
                 tostring(targetMap),
                 tostring(targetDiff),
                 targetReq,
+                slotInfo,
                 buffStateTxt,
                 statusStr
             )
         end
 
-        task.wait(0.35)
+        task.wait(0.25)
     end
 end)
 
@@ -1422,8 +1500,8 @@ task.spawn(function()
     end
 end)
 
-print(("[Boost DQ Reborn] Đã tải hoàn tất | Min Lvl: %d (%s) -> %s [%s - Req Lv.%d]")
-    :format(currentMinLvl, tostring(currentMinOwner), tostring(targetMap), tostring(targetDiff), targetReq))
+print(("[Boost DQ Reborn] Đã sửa lỗi Combo Buff->Damage (5.0s) | Min Lvl: %d (%s) -> %s [%s]")
+    :format(currentMinLvl, tostring(currentMinOwner), tostring(targetMap), tostring(targetDiff)))
 ]=====]
 
 local fullSelfFile = "local WRAPPER_SOURCE = [=====[" .. WRAPPER_SOURCE .. "]=====]\n"
