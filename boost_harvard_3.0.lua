@@ -7,7 +7,7 @@ local ORIGINAL_URL = "https://raw.githubusercontent.com/trongkhumnum-creator/pip
 
 -- ============ Bảng Tùy Chỉnh =========================================
 local CUSTOM = {
-    BOOST                 = 1.5,   -- Hệ số nhân tầm đánh / bán kính kỹ năng
+    BOOST                 = 1.35,   -- Hệ số nhân tầm đánh / bán kính kỹ năng
     DETECT_HOLD           = 0.35,  -- Thời gian giữ mục tiêu trong bộ nhớ đệm (giây)
     CACHE_HZ              = 15,    -- Tần suất quét mục tiêu mỗi giây
     LOOT_WAIT_TIME        = 6,     -- Số giây bắt buộc chờ nhận Drop sau khi Boss chết
