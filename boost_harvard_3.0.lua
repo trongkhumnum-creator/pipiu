@@ -1,5 +1,5 @@
 -- =====================================================================
--- Harvard Labs v3.0 — Clean Wrapper (Fix 3rd Boss Drop & Difficulty Switch)
+-- Harvard Labs v3.0 — Clean Minimal Wrapper (100% Native Core Intact)
 -- =====================================================================
 
 local WRAPPER_SOURCE = [=====[
@@ -7,30 +7,28 @@ local ORIGINAL_URL = "https://raw.githubusercontent.com/trongkhumnum-creator/pip
 
 -- ============ Bảng Tùy Chỉnh (Custom Tuning) =========================
 local CUSTOM = {
-    BOOST          = 1.5,  -- Hệ số nhân tầm đánh / bán kính kỹ năng (mặc định 1.5)
-    DETECT_ONLY    = true, -- Chỉ tung chiêu khi quái nằm trong tầm trúng
-    DETECT_HOLD    = 0.2,  -- Thời gian giữ trạng thái sẵn sàng đánh sau khi quái lệch tầm (giây)
-    CACHE_HZ       = 15,   -- Tần suất quét mục tiêu mỗi giây
-    DRAW_HUD       = true, -- Hiển thị vòng tròn tầm đánh dưới chân
+    BOOST        = 1.5,    -- Hệ số nhân tầm đánh / bán kính kỹ năng (mặc định 1.5)
+    DETECT_ONLY  = true,   -- Chỉ tung chiêu khi quái nằm trong tầm trúng
+    DETECT_HOLD  = 0.2,    -- Thời gian giữ trạng thái sẵn sàng đánh sau khi quái lệch tầm (giây)
+    CACHE_HZ     = 15,     -- Tần suất quét mục tiêu mỗi giây
+    DRAW_HUD     = true,   -- Hiển thị vòng tròn tầm đánh dưới chân
 
-    LOOT_WAIT_TIME = 5.5,  -- Số giây chờ nhặt Drop & nhận XP sau khi giết Boss thứ 3 (Boss cuối)
-    AUTO_REEXECUTE = true, -- Tự động chạy lại script khi chuyển giữa Sảnh <-> Dungeon
-    AUTO_REHOP     = true, -- Tự kết nối lại khi mất kết nối
+    -- Tính năng bổ sung (Không can thiệp vào combat của script gốc):
+    AUTO_REEXECUTE = true, -- Tự chạy lại script khi chuyển giữa Sảnh <-> Dungeon
+    AUTO_REHOP     = true, -- Tự kết nối lại khi bị văng / mất kết nối
 
     -- Ghi đè nhanh cài đặt của script gốc (để nil nếu muốn giữ mặc định):
-    WALK_SPEED     = nil,
-    BURST_SPEED    = nil,
-    STREAMER       = nil,
-    AUTO_QUEUE     = true,
+    WALK_SPEED   = nil,
+    BURST_SPEED  = nil,
+    STREAMER     = nil,
+    AUTO_QUEUE   = true,
 }
 -- =====================================================================
 
 if not game:IsLoaded() then game.Loaded:Wait() end
 
 local Players         = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TeleportService = game:GetService("TeleportService")
-local AssetService    = game:GetService("AssetService")
 local HttpService     = game:GetService("HttpService")
 local CoreGui         = game:GetService("CoreGui")
 local LocalPlayer     = Players.LocalPlayer
@@ -39,83 +37,26 @@ while not LocalPlayer do task.wait(); LocalPlayer = Players.LocalPlayer end
 local STATE_FILE    = "HarvardLabs/wrapper_state.json"
 local AUTOEXEC_PATH = "HarvardLabs/autoexec_boost_wrapper.lua"
 
--- Bảng mốc Level & Độ khó chuẩn của Dungeon Quest Reborn
-local DUNGEON_TIERS = {
-    -- Desert Temple (5 mức độ khó: 1, 6, 12, 20, 27)
-    { idx = 1,  map = "Desert Temple",     diff = "Easy",      req = 1   },
-    { idx = 2,  map = "Desert Temple",     diff = "Medium",    req = 6   },
-    { idx = 3,  map = "Desert Temple",     diff = "Hard",      req = 12  },
-    { idx = 4,  map = "Desert Temple",     diff = "Insane",    req = 20  },
-    { idx = 5,  map = "Desert Temple",     diff = "Nightmare", req = 27  },
-
-    -- Winter Outpost (5 mức độ khó: 33, 40, 45, 50, 55)
-    { idx = 6,  map = "Winter Outpost",    diff = "Easy",      req = 33  },
-    { idx = 7,  map = "Winter Outpost",    diff = "Medium",    req = 40  },
-    { idx = 8,  map = "Winter Outpost",    diff = "Hard",      req = 45  },
-    { idx = 9,  map = "Winter Outpost",    diff = "Insane",    req = 50  },
-    { idx = 10, map = "Winter Outpost",    diff = "Nightmare", req = 55  },
-
-    -- Các map từ Pirate Island trở đi (Insane & Nightmare cách nhau 5 cấp)
-    { idx = 11, map = "Pirate Island",     diff = "Insane",    req = 60  },
-    { idx = 12, map = "Pirate Island",     diff = "Nightmare", req = 65  },
-    { idx = 13, map = "King's Castle",     diff = "Insane",    req = 70  },
-    { idx = 14, map = "King's Castle",     diff = "Nightmare", req = 75  },
-    { idx = 15, map = "The Underworld",    diff = "Insane",    req = 80  },
-    { idx = 16, map = "The Underworld",    diff = "Nightmare", req = 85  },
-    { idx = 17, map = "Samurai Palace",    diff = "Insane",    req = 90  },
-    { idx = 18, map = "Samurai Palace",    diff = "Nightmare", req = 95  },
-    { idx = 19, map = "The Canals",        diff = "Insane",    req = 100 },
-    { idx = 20, map = "The Canals",        diff = "Nightmare", req = 105 },
-    { idx = 21, map = "Ghastly Harbor",    diff = "Insane",    req = 110 },
-    { idx = 22, map = "Ghastly Harbor",    diff = "Nightmare", req = 115 },
-    { idx = 23, map = "Steampunk Sewers",  diff = "Insane",    req = 120 },
-    { idx = 24, map = "Steampunk Sewers",  diff = "Nightmare", req = 125 },
-    { idx = 25, map = "Orbital Outpost",   diff = "Insane",    req = 135 },
-    { idx = 26, map = "Orbital Outpost",   diff = "Nightmare", req = 140 },
-    { idx = 27, map = "Volcanic Chambers", diff = "Insane",    req = 150 },
-    { idx = 28, map = "Volcanic Chambers", diff = "Nightmare", req = 155 },
-    { idx = 29, map = "Aquatic Temple",    diff = "Insane",    req = 160 },
-    { idx = 30, map = "Aquatic Temple",    diff = "Nightmare", req = 165 },
-    { idx = 31, map = "Enchanted Forest",  diff = "Insane",    req = 170 },
-    { idx = 32, map = "Enchanted Forest",  diff = "Nightmare", req = 175 },
-    { idx = 33, map = "Northern Lands",    diff = "Insane",    req = 180 },
-    { idx = 34, map = "Northern Lands",    diff = "Nightmare", req = 185 },
-    { idx = 35, map = "Gilded Skies",      diff = "Insane",    req = 190 },
-    { idx = 36, map = "Gilded Skies",      diff = "Nightmare", req = 195 },
-}
-
-local function getTierForLevel(lvl)
-    local best = DUNGEON_TIERS[1]
-    for _, t in ipairs(DUNGEON_TIERS) do
-        if lvl >= t.req then best = t else break end
-    end
-    return best
-end
-
 local wrapperState = {
     reExecute      = CUSTOM.AUTO_REEXECUTE,
     autoRehop      = CUSTOM.AUTO_REHOP,
     drawHud        = CUSTOM.DRAW_HUD,
     lobbyPlaceId   = nil,
     enteredTierIdx = nil,
-    leaveSignalAt  = 0,
     partyLevels    = {},
 }
 
-local function loadWrapperState()
-    if type(isfile) == "function" and type(readfile) == "function" then
-        local ok, exists = pcall(isfile, STATE_FILE)
-        if ok and exists then
-            local ok2, data = pcall(function() return HttpService:JSONDecode(readfile(STATE_FILE)) end)
-            if ok2 and type(data) == "table" then
-                if type(data.reExecute) == "boolean"     then wrapperState.reExecute = data.reExecute; CUSTOM.AUTO_REEXECUTE = data.reExecute end
-                if type(data.autoRehop) == "boolean"     then wrapperState.autoRehop = data.autoRehop; CUSTOM.AUTO_REHOP = data.autoRehop end
-                if type(data.drawHud) == "boolean"       then wrapperState.drawHud = data.drawHud; CUSTOM.DRAW_HUD = data.drawHud end
-                if type(data.lobbyPlaceId) == "number"   then wrapperState.lobbyPlaceId = data.lobbyPlaceId end
-                if type(data.enteredTierIdx) == "number" then wrapperState.enteredTierIdx = data.enteredTierIdx end
-                if type(data.leaveSignalAt) == "number"  then wrapperState.leaveSignalAt = data.leaveSignalAt end
-                if type(data.partyLevels) == "table"     then wrapperState.partyLevels = data.partyLevels end
-            end
+if type(isfile) == "function" and type(readfile) == "function" then
+    local ok, exists = pcall(isfile, STATE_FILE)
+    if ok and exists then
+        local ok2, data = pcall(function() return HttpService:JSONDecode(readfile(STATE_FILE)) end)
+        if ok2 and type(data) == "table" then
+            if type(data.reExecute) == "boolean"    then wrapperState.reExecute = data.reExecute; CUSTOM.AUTO_REEXECUTE = data.reExecute end
+            if type(data.autoRehop) == "boolean"    then wrapperState.autoRehop = data.autoRehop; CUSTOM.AUTO_REHOP = data.autoRehop end
+            if type(data.drawHud) == "boolean"      then wrapperState.drawHud = data.drawHud; CUSTOM.DRAW_HUD = data.drawHud end
+            if type(data.lobbyPlaceId) == "number"  then wrapperState.lobbyPlaceId = data.lobbyPlaceId end
+            if type(data.enteredTierIdx) == "number"then wrapperState.enteredTierIdx = data.enteredTierIdx end
+            if type(data.partyLevels) == "table"    then wrapperState.partyLevels = data.partyLevels end
         end
     end
 end
@@ -134,77 +75,15 @@ local function saveWrapperState()
     end
 end
 
-loadWrapperState()
-
--- Nhận diện chính xác đang ở Sảnh (Lobby) hay đang trong Dungeon
-local function isInDungeon()
-    if workspace:FindFirstChild("Lobby") ~= nil then return false end
-    if workspace:FindFirstChild("dungeon") ~= nil then return true end
-    local ef = workspace:FindFirstChild("enemies")
-    if ef and #ef:GetChildren() > 0 then return true end
-    if wrapperState.lobbyPlaceId and wrapperState.lobbyPlaceId > 0 then
-        return game.PlaceId ~= wrapperState.lobbyPlaceId
-    end
-    return false
-end
-
-local function resolveLobbyPlaceId()
-    if not isInDungeon() then
-        if wrapperState.lobbyPlaceId ~= game.PlaceId then
-            wrapperState.lobbyPlaceId = game.PlaceId
-            saveWrapperState()
-        end
-        return wrapperState.lobbyPlaceId
-    end
-    if wrapperState.lobbyPlaceId and wrapperState.lobbyPlaceId > 0 and wrapperState.lobbyPlaceId ~= 2414851778 then
-        return wrapperState.lobbyPlaceId
-    end
-    local ok, pages = pcall(function() return AssetService:GetGamePlacesAsync() end)
-    if ok and pages then
-        local okPage, list = pcall(function() return pages:GetCurrentPage() end)
-        if okPage and type(list) == "table" then
-            for _, p in ipairs(list) do
-                local pid = tonumber(p.PlaceId)
-                local pname = string.lower(tostring(p.Name or ""))
-                if pid and pid ~= game.PlaceId and pid ~= 2414851778 then
-                    wrapperState.lobbyPlaceId = pid
-                    saveWrapperState()
-                    return pid
-                elseif pid and pname:find("lobby") then
-                    wrapperState.lobbyPlaceId = pid
-                    saveWrapperState()
-                    return pid
-                end
-            end
-        end
-    end
-    return wrapperState.lobbyPlaceId
-end
-
-task.spawn(resolveLobbyPlaceId)
-
--- Đọc Level thật của nhân vật (Bỏ qua số 999 giả của chế độ Streamer)
+-- Quét Level thật của các nhân vật trước khi Streamer Mode của script gốc kịp ẩn thành 999
 local preScanLevels = {}
 local function readRawLevel(plr)
     if not plr then return nil end
     local ls = plr:FindFirstChild("leaderstats")
-    local candidates = {
-        ls and (ls:FindFirstChild("Level") or ls:FindFirstChild("level") or ls:FindFirstChild("Lvl")),
-        plr:FindFirstChild("level"),
-        plr:FindFirstChild("Level"),
-    }
-    for _, obj in ipairs(candidates) do
-        if obj and obj:IsA("ValueBase") then
-            local n = tonumber(tostring(obj.Value):gsub(",", ""):match("%d+"))
-            if n and n > 0 and n ~= 999 and n < 500 then
-                preScanLevels[plr.UserId] = n
-                return n
-            end
-        end
-    end
-    local attrLvl = plr:GetAttribute("Level") or plr:GetAttribute("level")
-    if attrLvl then
-        local n = tonumber(tostring(attrLvl):match("%d+"))
+    local obj = (ls and (ls:FindFirstChild("Level") or ls:FindFirstChild("level") or ls:FindFirstChild("Lvl")))
+        or plr:FindFirstChild("level") or plr:FindFirstChild("Level")
+    if obj then
+        local n = tonumber(tostring(obj.Value):gsub(",", ""):match("%d+"))
         if n and n > 0 and n ~= 999 and n < 500 then
             preScanLevels[plr.UserId] = n
             return n
@@ -227,67 +106,6 @@ end
 
 for _, plr in ipairs(Players:GetPlayers()) do
     readRawLevel(plr)
-end
-
--- Hàm lấy Level thấp nhất của Party (CHỈ tính các acc trong Party, tuyệt đối KHÔNG quét người lạ ở Sảnh)
-local context
-local function getPartyMinLevel()
-    loadWrapperState()
-    local now = os.time()
-    wrapperState.partyLevels = type(wrapperState.partyLevels) == "table" and wrapperState.partyLevels or {}
-
-    local myLvl = readRawLevel(LocalPlayer) or 1
-    wrapperState.partyLevels[string.lower(LocalPlayer.Name)] = {
-        name = LocalPlayer.Name,
-        lvl  = myLvl,
-        ts   = now,
-    }
-
-    if isInDungeon() then
-        -- Khi đang ở trong Dungeon: chỉ có thành viên Party của bạn trong server, lưu tất cả vào danh sách Party
-        for _, plr in ipairs(Players:GetPlayers()) do
-            local l = readRawLevel(plr)
-            if l and l > 0 then
-                wrapperState.partyLevels[string.lower(plr.Name)] = {
-                    name = plr.Name,
-                    lvl  = l,
-                    ts   = now,
-                }
-            end
-        end
-    else
-        -- Khi đang ở Sảnh: chỉ cập nhật những tài khoản ĐÃ thuộc Party (hoặc có trong CFG.carryName), bỏ qua hoàn toàn người lạ!
-        local carryName = (context and context.CFG and string.lower(tostring(context.CFG.carryName or ""))) or ""
-        for _, plr in ipairs(Players:GetPlayers()) do
-            local k = string.lower(plr.Name)
-            local isKnownMember = wrapperState.partyLevels[k] and (now - (tonumber(wrapperState.partyLevels[k].ts) or 0) < 900)
-            local isCarryTarget = (#carryName > 1) and carryName:find(k, 1, true)
-            if isKnownMember or isCarryTarget then
-                local l = readRawLevel(plr)
-                if l and l > 0 then
-                    wrapperState.partyLevels[k] = {
-                        name = plr.Name,
-                        lvl  = l,
-                        ts   = now,
-                    }
-                end
-            end
-        end
-    end
-
-    saveWrapperState()
-
-    local minLvl, minOwner = myLvl, LocalPlayer.Name
-    for k, info in pairs(wrapperState.partyLevels) do
-        if type(info) == "table" and tonumber(info.lvl) and (now - (tonumber(info.ts) or 0) < 900) then
-            if info.lvl < minLvl then
-                minLvl = info.lvl
-                minOwner = info.name or k
-            end
-        end
-    end
-
-    return minLvl, minOwner
 end
 
 -- 1. Tải và khởi chạy script gốc nguyên bản 100% ----------------------
@@ -320,6 +138,7 @@ if not chunk then error("[Boost] Lỗi biên dịch script gốc: " .. tostring(
 chunk()
 
 -- 2. Tìm bảng context đang chạy trong bộ nhớ --------------------------
+local context
 for _ = 1, 100 do
     for _, v in ipairs(getgc(true)) do
         if type(v) == "table"
@@ -339,7 +158,7 @@ if not context then error("[Boost] Không tìm thấy context trong getgc") end
 local CFG, RT = context.CFG, context.RT
 _G = _G or {}; getgenv = getgenv or function() return _G end
 
--- 3. Áp dụng tùy chỉnh tầm đánh (Scale) & Khóa Replay sớm --------------
+-- 3. Áp dụng tùy chỉnh tầm đánh (Chống nhân chồng nhiều lần) ----------
 local KEYS = {
     "aoeRadius", "aoeDistance",
     "abilityRadius", "abilityRangeKnown",
@@ -368,8 +187,6 @@ local function captureBaseCFG()
 end
 
 captureBaseCFG()
-
-local allowDungeonReplayNow = false
 
 local function applyCustomSettings()
     for _, k in ipairs(KEYS) do
@@ -403,41 +220,21 @@ local function applyCustomSettings()
     if CUSTOM.STREAMER ~= nil then CFG.streamer = CUSTOM.STREAMER end
     if CUSTOM.AUTO_QUEUE ~= nil then CFG.autoQueue = CUSTOM.AUTO_QUEUE end
 
-    -- Tắt giả số 999 trên Level để luôn đọc được Level thật khi vừa lên cấp
+    -- Tắt giả số 999 trên bảng xếp hạng để đọc đúng Level của các acc trong Party
     CFG.streamerLevel       = false
     CFG.streamerOthers      = false
     CFG.streamerLeaderboard = false
-
-    -- Đồng bộ ngay Map & Độ khó theo Party Min Level
-    local minLvl = getPartyMinLevel()
-    local tier = getTierForLevel(minLvl)
-    CFG.autoQueueMap        = tier.map
-    CFG.autoQueueDifficulty = tier.diff
-    CFG.autoQueueMinLevel   = 0
-    CFG.autoStartDungeon    = true
-
-    -- Nếu đang trong Dungeon mà chưa hạ xong Boss thứ 3 (Boss cuối), khóa chặt autoQueueReplay = false!
-    if isInDungeon() and not allowDungeonReplayNow then
-        CFG.autoQueueReplay = false
-    end
 end
 
--- Loại bỏ các khóa tầm đánh, streamerLevel và autoQueueReplay khỏi PERSIST để file JSON không tự bật lại Replay sớm
 if type(context.PERSIST) == "table" then
     for i = #context.PERSIST, 1, -1 do
-        local key = context.PERSIST[i]
-        if key == "streamerLevel" or key == "streamerOthers" or key == "streamerLeaderboard" or key == "autoQueueReplay" then
-            table.remove(context.PERSIST, i)
-        else
-            for _, k in ipairs(KEYS) do
-                if key == k then table.remove(context.PERSIST, i); break end
-            end
+        for _, k in ipairs(KEYS) do
+            if context.PERSIST[i] == k then table.remove(context.PERSIST, i); break end
         end
     end
 end
 
 applyCustomSettings()
-if type(context.saveConfig) == "function" then pcall(context.saveConfig) end
 
 if type(context.applyClassProfile) == "function" then
     local orig = context.applyClassProfile
@@ -461,7 +258,7 @@ if type(context.loadConfig) == "function" then
     end
 end
 
--- 4. Kiểm tra mục tiêu trong tầm đánh (Landing Detection) -------------
+-- 4. Kiểm tra mục tiêu trong tầm đánh (Giữ nguyên nguyên bản) ---------
 local cacheAt, cacheOK, cacheTgt = 0, false, nil
 local lastHitAt, lastTgt = 0, nil
 
@@ -513,7 +310,7 @@ local function detectionRange()
     return reach + rad
 end
 
--- 5. Chặn tung chiêu khi chưa tới tầm (Bỏ qua chiêu Buff) -------------
+-- 5. Chặn tung chiêu khi chưa tới tầm (Giữ nguyên logic gốc của bạn) ---
 local function gate(fn)
     if type(fn) ~= "function" then return fn end
     return function(slot, ...)
@@ -526,126 +323,116 @@ end
 if type(context.gsSlotReady) == "function" then context.gsSlotReady = gate(context.gsSlotReady) end
 if type(context.slotReady) == "function" then context.slotReady = gate(context.slotReady) end
 
--- 6. Nhận diện chính xác Boss thứ 3 (Boss cuối) đã chết & Chuyển Độ Khó
-local seenBossModels   = {}
-local killedBossModels = {}
-local thirdBossSeen    = false
+-- 6. Tự chọn Map & Độ khó theo Party Min Level & Chống Replay sớm -----
+local DUNGEON_TIERS = {
+    { idx = 1,  map = "Desert Temple",     diff = "Easy",      req = 1   },
+    { idx = 2,  map = "Desert Temple",     diff = "Medium",    req = 6   },
+    { idx = 3,  map = "Desert Temple",     diff = "Hard",      req = 12  },
+    { idx = 4,  map = "Desert Temple",     diff = "Insane",    req = 20  },
+    { idx = 5,  map = "Desert Temple",     diff = "Nightmare", req = 27  },
+    { idx = 6,  map = "Winter Outpost",    diff = "Easy",      req = 33  },
+    { idx = 7,  map = "Winter Outpost",    diff = "Medium",    req = 40  },
+    { idx = 8,  map = "Winter Outpost",    diff = "Hard",      req = 45  },
+    { idx = 9,  map = "Winter Outpost",    diff = "Insane",    req = 50  },
+    { idx = 10, map = "Winter Outpost",    diff = "Nightmare", req = 55  },
+    { idx = 11, map = "Pirate Island",     diff = "Insane",    req = 60  },
+    { idx = 12, map = "Pirate Island",     diff = "Nightmare", req = 65  },
+    { idx = 13, map = "King's Castle",     diff = "Insane",    req = 70  },
+    { idx = 14, map = "King's Castle",     diff = "Nightmare", req = 75  },
+    { idx = 15, map = "The Underworld",    diff = "Insane",    req = 80  },
+    { idx = 16, map = "The Underworld",    diff = "Nightmare", req = 85  },
+    { idx = 17, map = "Samurai Palace",    diff = "Insane",    req = 90  },
+    { idx = 18, map = "Samurai Palace",    diff = "Nightmare", req = 95  },
+    { idx = 19, map = "The Canals",        diff = "Insane",    req = 100 },
+    { idx = 20, map = "The Canals",        diff = "Nightmare", req = 105 },
+    { idx = 21, map = "Ghastly Harbor",    diff = "Insane",    req = 110 },
+    { idx = 22, map = "Ghastly Harbor",    diff = "Nightmare", req = 115 },
+    { idx = 23, map = "Steampunk Sewers",  diff = "Insane",    req = 120 },
+    { idx = 24, map = "Steampunk Sewers",  diff = "Nightmare", req = 125 },
+    { idx = 25, map = "Orbital Outpost",   diff = "Insane",    req = 135 },
+    { idx = 26, map = "Orbital Outpost",   diff = "Nightmare", req = 140 },
+    { idx = 27, map = "Volcanic Chambers", diff = "Insane",    req = 150 },
+    { idx = 28, map = "Volcanic Chambers", diff = "Nightmare", req = 155 },
+    { idx = 29, map = "Aquatic Temple",    diff = "Insane",    req = 160 },
+    { idx = 30, map = "Aquatic Temple",    diff = "Nightmare", req = 165 },
+    { idx = 31, map = "Enchanted Forest",  diff = "Insane",    req = 170 },
+    { idx = 32, map = "Enchanted Forest",  diff = "Nightmare", req = 175 },
+    { idx = 33, map = "Northern Lands",    diff = "Insane",    req = 180 },
+    { idx = 34, map = "Northern Lands",    diff = "Nightmare", req = 185 },
+    { idx = 35, map = "Gilded Skies",      diff = "Insane",    req = 190 },
+    { idx = 36, map = "Gilded Skies",      diff = "Nightmare", req = 195 },
+}
 
-local function countTableEntries(tbl)
-    local c = 0
-    for _ in pairs(tbl) do c = c + 1 end
-    return c
+local function isLobbyPlace()
+    return workspace:FindFirstChild("Lobby") ~= nil
 end
 
-local function isThirdOrFinalBossName(nameStr)
-    local s = string.lower(tostring(nameStr or ""))
-    return s:find("thirdboss", 1, true)
-        or s:find("finalboss", 1, true)
-        or s:find("lastboss", 1, true)
-        or s:find("odin", 1, true)
-        or s:find("vytelus", 1, true)
+if isLobbyPlace() and wrapperState.lobbyPlaceId ~= game.PlaceId then
+    wrapperState.lobbyPlaceId = game.PlaceId
+    saveWrapperState()
 end
 
--- Kiểm tra xem trong Dungeon còn cửa chặn (barrier) nào chưa mở không
-local function hasAnyClosedBarrierInDungeon()
-    local dFolder = workspace:FindFirstChild("dungeon")
-    if not dFolder then return false end
-    for _, room in ipairs(dFolder:GetChildren()) do
-        local barrier = room:FindFirstChild("barrier")
-        if barrier then
-            local parts = barrier:IsA("BasePart") and { barrier } or barrier:GetDescendants()
-            for _, p in ipairs(parts) do
-                if p:IsA("BasePart") and p.CanCollide and p.Transparency < 0.95 then
-                    return true
-                end
+local function getTierForLevel(lvl)
+    local best = DUNGEON_TIERS[1]
+    for _, t in ipairs(DUNGEON_TIERS) do
+        if lvl >= t.req then best = t else break end
+    end
+    return best
+end
+
+local function getPartyMinLevel()
+    local now = os.time()
+    wrapperState.partyLevels = type(wrapperState.partyLevels) == "table" and wrapperState.partyLevels or {}
+
+    local myLvl = readRawLevel(LocalPlayer) or 1
+    wrapperState.partyLevels[string.lower(LocalPlayer.Name)] = { name = LocalPlayer.Name, lvl = myLvl, ts = now }
+
+    if not isLobbyPlace() then
+        -- Khi đang ở trong Dungeon, tất cả người chơi trong server đều thuộc Party của bạn
+        for _, plr in ipairs(Players:GetPlayers()) do
+            local l = readRawLevel(plr)
+            if l and l > 0 then
+                wrapperState.partyLevels[string.lower(plr.Name)] = { name = plr.Name, lvl = l, ts = now }
             end
         end
-    end
-    return false
-end
-
--- Kiểm tra giao diện Kết thúc Dungeon / Nút Replay chính thức của Game (chỉ hiện sau khi Boss cuối chết)
-local function isGameDungeonEndGuiVisible()
-    local pgui = LocalPlayer:FindFirstChild("PlayerGui")
-    if not pgui then return false end
-    for _, gName in ipairs({ "retryGui", "EndingGui", "rewardGui", "endScreen", "VictoryGui" }) do
-        local g = pgui:FindFirstChild(gName)
-        if g and g:IsA("ScreenGui") and g.Enabled then
-            return true
-        end
-    end
-    for _, gui in ipairs(pgui:GetChildren()) do
-        if gui:IsA("ScreenGui") and gui.Enabled and gui.Name ~= "HLBoostMiniHub" then
-            for _, desc in ipairs(gui:GetDescendants()) do
-                if (desc:IsA("TextButton") or desc:IsA("TextLabel")) and desc.Visible then
-                    local t = string.lower(desc.Text or "")
-                    if t == "replay" or t == "play again" or t:find("dungeon complete", 1, true) or t:find("victory!", 1, true) then
-                        return true
-                    end
-                end
-            end
-        end
-    end
-    return false
-end
-
--- Cập nhật danh sách các Boss đã xuất hiện và đã bị tiêu diệt trong lần chạy này
-local function updateBossProgress()
-    local RD = context.RD
-    local anyBossAlive = false
-    local anyEnemyAlive = false
-
-    if RD and type(RD.famLast) == "table" and RD.famLast["third"] then
-        thirdBossSeen = true
-    end
-
-    if RD and type(RD.enemies) == "table" then
-        for _, e in ipairs(RD.enemies) do
-            local m = e.model or (e.root and e.root.Parent)
-            local alive = e.humanoid and e.humanoid.Health > 0
-            if alive then anyEnemyAlive = true end
-
-            if e.isBoss and m then
-                seenBossModels[m] = e.name or m.Name
-                if isThirdOrFinalBossName(e.name or m.Name) then
-                    thirdBossSeen = true
-                end
-                if alive then
-                    anyBossAlive = true
-                else
-                    killedBossModels[m] = true
+    else
+        -- Khi ở Sảnh: cập nhật Level của các thành viên Party đã biết hoặc acc được khai báo trong CFG.carryName
+        local carryName = string.lower(tostring(CFG.carryName or ""))
+        for _, plr in ipairs(Players:GetPlayers()) do
+            local k = string.lower(plr.Name)
+            local known = wrapperState.partyLevels[k] and (now - (tonumber(wrapperState.partyLevels[k].ts) or 0) < 900)
+            if known or (carryName ~= "" and carryName:find(k, 1, true)) then
+                local l = readRawLevel(plr)
+                if l and l > 0 then
+                    wrapperState.partyLevels[k] = { name = plr.Name, lvl = l, ts = now }
                 end
             end
         end
     end
 
-    -- Kiểm tra các Boss trong seenBossModels đã về 0 máu hoặc bị xóa khỏi workspace sau khi chết
-    for m, bName in pairs(seenBossModels) do
-        local hum = m and m.Parent and m:FindFirstChildOfClass("Humanoid")
-        if not m or not m.Parent or (hum and hum.Health <= 0) then
-            killedBossModels[m] = true
-        elseif hum and hum.Health > 0 then
-            anyBossAlive = true
-            anyEnemyAlive = true
+    local minLvl, minOwner = math.huge, LocalPlayer.Name
+    for k, info in pairs(wrapperState.partyLevels) do
+        if type(info) == "table" and tonumber(info.lvl) and (now - (tonumber(info.ts) or 0) < 900) then
+            if info.lvl < minLvl then
+                minLvl = info.lvl
+                minOwner = info.name or k
+            end
         end
     end
 
-    local numSeen   = countTableEntries(seenBossModels)
-    local numKilled = countTableEntries(killedBossModels)
-    local endGuiUp  = isGameDungeonEndGuiVisible()
-    local hasBarrier= hasAnyClosedBarrierInDungeon()
-
-    -- Xác nhận Boss thứ 3 (hoặc Boss cuối cùng khi toàn bộ cửa barrier đã mở & hiện bảng kết thúc) đã bị hạ gục:
-    local finalBossDefeated = false
-    if not anyBossAlive then
-        if endGuiUp then
-            finalBossDefeated = true
-        elseif (numKilled >= 3 or (thirdBossSeen and numKilled >= 1)) and not anyEnemyAlive and not hasBarrier then
-            finalBossDefeated = true
+    -- Nếu chưa có lịch sử Party từ Dungeon, quét toàn bộ người chơi hiện có
+    if minLvl == math.huge or minLvl == myLvl then
+        for _, plr in ipairs(Players:GetPlayers()) do
+            local l = readRawLevel(plr)
+            if l and l > 0 and l < minLvl then
+                minLvl = l
+                minOwner = plr.Name
+            end
         end
     end
 
-    return finalBossDefeated, numKilled, numSeen, anyBossAlive, anyEnemyAlive, hasBarrier
+    if minLvl == math.huge then minLvl = myLvl end
+    return minLvl, minOwner
 end
 
 -- 7. Auto Re-Execute & Auto Re-Hop -----------------------------------
@@ -678,40 +465,22 @@ LocalPlayer.OnTeleport:Connect(function()
 end)
 
 local isTeleportingToLobby = false
-local function teleportPartyToLobby(reason, newTier)
+local function teleportPartyToLobby(reason)
     if isTeleportingToLobby then return end
     isTeleportingToLobby = true
-
-    if newTier then
-        CFG.autoQueueMap        = newTier.map
-        CFG.autoQueueDifficulty = newTier.diff
-        wrapperState.enteredTierIdx = newTier.idx
-    end
-    wrapperState.leaveSignalAt = os.time()
+    warn("[Boost] Đang đưa Party về Sảnh: " .. tostring(reason))
     saveWrapperState()
     if type(context.saveConfig) == "function" then pcall(context.saveConfig) end
     registerAutoReExecute()
 
-    local lobbyId = resolveLobbyPlaceId()
-    warn(("[Boost] Đang đưa Party về Sảnh (PlaceId: %s) | Lý do: %s"):format(tostring(lobbyId), tostring(reason)))
-
     task.spawn(function()
-        if isInDungeon() then
-            pcall(function()
-                local remotes = ReplicatedStorage:FindFirstChild("remotes")
-                local leaveRem = remotes and (remotes:FindFirstChild("leaveDungeon") or remotes:FindFirstChild("returnToLobby"))
-                if leaveRem and leaveRem:IsA("RemoteEvent") then
-                    leaveRem:FireServer()
-                end
-            end)
-        end
         while true do
-            if lobbyId then
+            if wrapperState.lobbyPlaceId then
                 pcall(function()
-                    TeleportService:Teleport(lobbyId, LocalPlayer)
+                    TeleportService:Teleport(wrapperState.lobbyPlaceId, LocalPlayer)
                 end)
             end
-            task.wait(3.5)
+            task.wait(4)
         end
     end)
 end
@@ -764,6 +533,7 @@ end
 
 updateHudPartVisibility()
 
+-- Chèn mục điều khiển nhỏ gọn vào đầu danh sách trong cửa sổ Harvard Labs
 local hubStatusText = nil
 local cardInjected  = false
 
@@ -818,7 +588,7 @@ local function tryInjectNativeCard()
     title.Size = UDim2.new(1, -28, 0, 28)
     title.Position = UDim2.new(0, 14, 0, 4)
     title.BackgroundTransparency = 1
-    title.Text = "AutoMap Party, Boss 3 Guard & Re-Execute"
+    title.Text = "AutoMap Party & Re-Execute (Tích hợp Harvard Labs)"
     title.TextColor3 = Color3.fromRGB(235, 65, 45)
     title.Font = Enum.Font.GothamBold
     title.TextSize = 12
@@ -833,7 +603,7 @@ local function tryInjectNativeCard()
     statusLbl.TextSize = 11
     statusLbl.TextWrapped = true
     statusLbl.TextXAlignment = Enum.TextXAlignment.Left
-    statusLbl.Text = "Đang kiểm tra Level Party & tiến độ Boss..."
+    statusLbl.Text = "Đang kiểm tra Level Party..."
     hubStatusText = statusLbl
 
     local function makeToggleRow(yPos, text, key, cb)
@@ -892,11 +662,10 @@ local function tryInjectNativeCard()
     end)
 end
 
--- 9. Luồng kiểm soát Tiến độ Boss thứ 3 & Chuyển Độ khó khi đủ Req Lvl
+-- Luồng nhẹ kiểm tra Level Party & Chuyển Map (Chỉ cập nhật khi có thay đổi, không ép mỗi frame)
 task.spawn(function()
-    local finalBossDeadAt = nil
-    local dungeonStartTierIdx = nil
-    local lastQueueAttemptAt = 0
+    local bossSeen = false
+    local bossDefeatedAt = nil
 
     while not RT.destroyed do
         tryInjectNativeCard()
@@ -904,7 +673,7 @@ task.spawn(function()
         local minLvl, minOwner = getPartyMinLevel()
         local targetTier = getTierForLevel(minLvl)
 
-        -- Luôn đồng bộ Map & Độ khó mục tiêu vào CFG (nếu thay đổi thì lưu ngay)
+        -- Chỉ cập nhật CFG và lưu khi Map hoặc Độ khó mục tiêu thực sự thay đổi
         if CFG.autoQueueMap ~= targetTier.map or CFG.autoQueueDifficulty ~= targetTier.diff then
             CFG.autoQueueMap        = targetTier.map
             CFG.autoQueueDifficulty = targetTier.diff
@@ -913,119 +682,68 @@ task.spawn(function()
             if type(context.refreshAll) == "function" then pcall(context.refreshAll) end
         end
 
-        if not isInDungeon() then
-            -- ĐANG Ở SẢNH (LOBBY)
-            resolveLobbyPlaceId()
-            table.clear(seenBossModels)
-            table.clear(killedBossModels)
-            thirdBossSeen          = false
-            finalBossDeadAt        = nil
-            allowDungeonReplayNow  = false
-            dungeonStartTierIdx    = targetTier.idx
+        if isLobbyPlace() then
+            bossSeen = false
+            bossDefeatedAt = nil
             wrapperState.enteredTierIdx = targetTier.idx
             saveWrapperState()
-
-            CFG.autoQueue       = true
-            CFG.autoQueueReplay = false
-
-            -- Hỗ trợ gọi tạo phòng đúng Độ khó mới ở Sảnh nếu sau 6s chưa vào phòng
-            if os.clock() - lastQueueAttemptAt > 6 then
-                lastQueueAttemptAt = os.clock()
-                pcall(function()
-                    local remotes = ReplicatedStorage:FindFirstChild("remotes")
-                    local createLobby = remotes and remotes:FindFirstChild("createLobby")
-                    local startDungeon = remotes and remotes:FindFirstChild("startDungeon")
-                    if createLobby and createLobby:IsA("RemoteFunction") then
-                        task.spawn(function()
-                            pcall(function()
-                                createLobby:InvokeServer(targetTier.map, targetTier.diff, 0, CFG.autoQueuePrivate ~= false, CFG.autoQueueHardcore == true, false)
-                            end)
-                        end)
-                    elseif createLobby and createLobby:IsA("RemoteEvent") then
-                        pcall(function()
-                            createLobby:FireServer(targetTier.map, targetTier.diff, 0, CFG.autoQueuePrivate ~= false, CFG.autoQueueHardcore == true, false)
-                        end)
-                    end
-                    if startDungeon and startDungeon:IsA("RemoteEvent") then
-                        task.delay(2, function()
-                            if not isInDungeon() then pcall(function() startDungeon:FireServer() end) end
-                        end)
-                    end
-                end)
-            end
-
             if hubStatusText then
-                hubStatusText.Text = ("Sảnh | Party Min Lvl: %d (%s) -> Tạo phòng: %s [%s - Req Lv.%d]")
+                hubStatusText.Text = ("Sảnh | Party Min Lvl: %d (%s) -> Tự vào: %s [%s - Req Lv.%d]")
                     :format(minLvl, tostring(minOwner), targetTier.map, targetTier.diff, targetTier.req)
             end
         else
-            -- ĐANG TRONG DUNGEON
-            -- Khóa mốc Tier lúc bắt đầu vào Dungeon (chỉ lấy 1 lần đầu trận trước khi giết Boss để so sánh khi lên cấp)
-            if not dungeonStartTierIdx then
-                dungeonStartTierIdx = wrapperState.enteredTierIdx or targetTier.idx
-                wrapperState.enteredTierIdx = dungeonStartTierIdx
-                saveWrapperState()
+            if not wrapperState.enteredTierIdx or targetTier.idx < wrapperState.enteredTierIdx then
+                wrapperState.enteredTierIdx = targetTier.idx
             end
 
-            -- Nếu một acc khác trong Party vừa phát tín hiệu về Sảnh nâng Độ khó (trong vòng 20s qua)
-            if wrapperState.leaveSignalAt and (os.time() - wrapperState.leaveSignalAt <= 20) then
-                if targetTier.idx > dungeonStartTierIdx then
-                    teleportPartyToLobby("Đồng bộ theo Party về Sảnh nâng Độ khó/Map", targetTier)
-                    break
+            -- Kiểm tra Boss trong context.RD.enemies của script gốc
+            local RD = context.RD
+            local bossAlive = false
+            if RD and type(RD.enemies) == "table" then
+                for _, e in ipairs(RD.enemies) do
+                    if e.isBoss then
+                        bossSeen = true
+                        if e.humanoid and e.humanoid.Health > 0 then
+                            bossAlive = true
+                        end
+                    end
                 end
             end
+            if RD and type(RD.bossDown) == "table" and next(RD.bossDown) ~= nil then
+                bossSeen = true
+            end
 
-            local finalBossDead, numKilled, numSeen, anyBossAlive, anyEnemyAlive, hasBarrier = updateBossProgress()
-            local needUpgradeDiffOrMap = (targetTier.idx > dungeonStartTierIdx)
-            local progressMsg = ("Boss đã hạ: %d/3"):format(numKilled)
+            local needUpgradeMap = targetTier.idx > (wrapperState.enteredTierIdx or targetTier.idx)
 
-            if finalBossDead then
-                if not finalBossDeadAt then
-                    finalBossDeadAt = os.clock()
-                    print(("[Boost] Đã hạ Boss cuối (Boss %d)! Chờ %.1fs nhận Drop & XP..."):format(math.max(numKilled, 3), CUSTOM.LOOT_WAIT_TIME))
-                end
-                local waited = os.clock() - finalBossDeadAt
-
-                if waited >= CUSTOM.LOOT_WAIT_TIME then
-                    -- Quét lại Level một lần nữa sau khi nhận XP của Boss thứ 3
-                    minLvl, minOwner = getPartyMinLevel()
-                    targetTier = getTierForLevel(minLvl)
-                    needUpgradeDiffOrMap = (targetTier.idx > dungeonStartTierIdx)
-
-                    if needUpgradeDiffOrMap then
-                        -- Đã đủ req lvl lên Độ khó mới / Map mới -> Khóa Replay và đưa cả Party về Sảnh!
-                        allowDungeonReplayNow = false
-                        CFG.autoQueueReplay   = false
-                        teleportPartyToLobby(("Đủ Req Lv.%d -> Về Sảnh chuyển sang %s [%s]"):format(targetTier.req, targetTier.map, targetTier.diff), targetTier)
+            if bossSeen and not bossAlive then
+                if not bossDefeatedAt then bossDefeatedAt = os.clock() end
+                local waited = os.clock() - bossDefeatedAt
+                if waited >= 4.5 then
+                    if needUpgradeMap then
+                        -- Đã giết Boss, nhận xong Drop VÀ đủ req lvl lên Độ khó / Map mới -> Đưa cả Party về Sảnh!
+                        CFG.autoQueueReplay = false
+                        teleportPartyToLobby(("Đủ Req Lv.%d -> Chuyển sang %s [%s]"):format(targetTier.req, targetTier.map, targetTier.diff))
                         break
                     else
-                        -- Chưa lên mốc Độ khó mới -> Mở khóa cho phép Replay tự nhiên!
-                        allowDungeonReplayNow = true
-                        CFG.autoQueueReplay   = true
-                        progressMsg = "Đã nhận Drop Boss 3 -> Đang Replay!"
+                        -- Chưa lên mốc mới -> Mở lại Replay tự nhiên của Harvard Labs
+                        CFG.autoQueueReplay = true
                     end
                 else
-                    allowDungeonReplayNow = false
-                    CFG.autoQueueReplay   = false
-                    progressMsg = ("Boss 3 đã chết! Chờ nhận Drop (%.1fs)..."):format(CUSTOM.LOOT_WAIT_TIME - waited)
+                    CFG.autoQueueReplay = false
                 end
             else
-                -- Chưa giết xong Boss thứ 3 -> KHÓA CỨNG Replay để không bao giờ bị Replay sớm ở Boss 1 hoặc Boss 2!
-                finalBossDeadAt       = nil
-                allowDungeonReplayNow = false
-                CFG.autoQueueReplay   = false
-                if needUpgradeDiffOrMap then
-                    progressMsg = ("Boss: %d/3 (Đủ Lv.%d -> Xong Boss 3 sẽ về Sảnh lên %s)"):format(numKilled, minLvl, targetTier.diff)
-                end
+                -- Khi Boss chưa xuất hiện hoặc chưa chết -> Tắt Replay để không bị Replay sớm ở các map đầu
+                CFG.autoQueueReplay = false
             end
 
             if hubStatusText then
-                hubStatusText.Text = ("Dungeon | Min Lvl: %d (%s) -> Mục tiêu: %s [%s - Req Lv.%d] | %s")
-                    :format(minLvl, tostring(minOwner), targetTier.map, targetTier.diff, targetTier.req, progressMsg)
+                hubStatusText.Text = ("Dungeon | Party Min Lvl: %d (%s) -> Mục tiêu: %s [%s - Req Lv.%d]%s")
+                    :format(minLvl, tostring(minOwner), targetTier.map, targetTier.diff, targetTier.req,
+                        needUpgradeMap and " (Xong Boss sẽ về Sảnh lên Map)" or "")
             end
         end
 
-        task.wait(0.5)
+        task.wait(1)
     end
 end)
 
