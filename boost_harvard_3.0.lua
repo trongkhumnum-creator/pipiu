@@ -1,5 +1,5 @@
 -- =====================================================================
--- Harvard Labs v3.0 — Clean Wrapper (Fix 3rd Boss Drop & Difficulty Switch)
+-- Harvard Labs v3.0 — Party Alt Ready Sync + Auto Buy Gold Gamepasses
 -- =====================================================================
 
 local WRAPPER_SOURCE = [=====[
@@ -7,81 +7,108 @@ local ORIGINAL_URL = "https://raw.githubusercontent.com/trongkhumnum-creator/pip
 
 -- ============ Bảng Tùy Chỉnh (Custom Tuning) =========================
 local CUSTOM = {
-    BOOST          = 1.5,  -- Hệ số nhân tầm đánh / bán kính kỹ năng (mặc định 1.5)
-    DETECT_ONLY    = true, -- Chỉ tung chiêu khi quái nằm trong tầm trúng
-    DETECT_HOLD    = 0.2,  -- Thời gian giữ trạng thái sẵn sàng đánh sau khi quái lệch tầm (giây)
-    CACHE_HZ       = 15,   -- Tần suất quét mục tiêu mỗi giây
-    DRAW_HUD       = true, -- Hiển thị vòng tròn tầm đánh dưới chân
+    BOOST               = 1.5,  -- Hệ số nhân tầm đánh / bán kính kỹ năng (mặc định 1.5)
+    DETECT_ONLY         = true, -- Chỉ tung chiêu khi quái nằm trong tầm trúng
+    DETECT_HOLD         = 0.2,  -- Thời gian giữ trạng thái sẵn sàng đánh sau khi quái lệch tầm (giây)
+    CACHE_HZ            = 15,   -- Tần suất quét mục tiêu mỗi giây
+    DRAW_HUD            = true, -- Hiển thị vòng tròn tầm đánh dưới chân
 
-    LOOT_WAIT_TIME = 5.5,  -- Số giây chờ nhặt Drop & nhận XP sau khi giết Boss thứ 3 (Boss cuối)
-    AUTO_REEXECUTE = true, -- Tự động chạy lại script khi chuyển giữa Sảnh <-> Dungeon
-    AUTO_REHOP     = true, -- Tự kết nối lại khi mất kết nối
+    -- Cấu hình Party & Auto Gamepass:
+    LOOT_WAIT_TIME      = 5.5,  -- Số giây chờ nhận Drop sau khi Boss thứ 3 chết
+    ALT_READY_GRACE     = 3.0,  -- Số giây chờ thêm sau khi tất cả Alt đã load xong ở Sảnh để kịp vào phòng
+    GAMEPASS_WAIT_TIME  = 5.0,  -- Đứng chờ đúng 5s ở Lobby để mua xong Gamepass trước khi vào Dungeon khác
+    AUTO_BUY_GAMEPASS   = true, -- Tự động về Lobby & chờ 5s mua VIP -> x2 Gold -> Extra Item khi đủ Gold
+    AUTO_REEXECUTE      = true, -- Tự động chạy lại script khi chuyển giữa Sảnh <-> Dungeon
+    AUTO_REHOP          = true, -- Tự kết nối lại khi mất kết nối
 
     -- Ghi đè nhanh cài đặt của script gốc (để nil nếu muốn giữ mặc định):
-    WALK_SPEED     = nil,
-    BURST_SPEED    = nil,
-    STREAMER       = nil,
-    AUTO_QUEUE     = true,
+    WALK_SPEED          = nil,
+    BURST_SPEED         = nil,
+    STREAMER            = nil,
+    AUTO_QUEUE          = true,
 }
 -- =====================================================================
 
 if not game:IsLoaded() then game.Loaded:Wait() end
 
-local Players         = game:GetService("Players")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local TeleportService = game:GetService("TeleportService")
-local AssetService    = game:GetService("AssetService")
-local HttpService     = game:GetService("HttpService")
-local CoreGui         = game:GetService("CoreGui")
-local LocalPlayer     = Players.LocalPlayer
+local Players             = game:GetService("Players")
+local ReplicatedStorage   = game:GetService("ReplicatedStorage")
+local TeleportService     = game:GetService("TeleportService")
+local AssetService        = game:GetService("AssetService")
+local HttpService         = game:GetService("HttpService")
+local CoreGui             = game:GetService("CoreGui")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+
+local LocalPlayer = Players.LocalPlayer
 while not LocalPlayer do task.wait(); LocalPlayer = Players.LocalPlayer end
 
 local STATE_FILE    = "HarvardLabs/wrapper_state.json"
 local AUTOEXEC_PATH = "HarvardLabs/autoexec_boost_wrapper.lua"
 
--- Bảng mốc Level & Độ khó chuẩn của Dungeon Quest Reborn
+-- Danh sách 3 Gamepass theo đúng thứ tự ưu tiên của bạn:
+-- 1. VIP cosmetics and 20%+ exp -> 2. x2 Gold -> 3. Extra Item
+local GAMEPASS_PRIORITY = {
+    {
+        id       = "VIP",
+        label    = "VIP cosmetics and 20%+ exp",
+        keywords = { "vip cosmetics", "20%+ exp", "vip" },
+        remoteNames = { "VIP", "Vip", "vip", "VIPCosmetics", "vipCosmetics" },
+    },
+    {
+        id       = "X2GOLD",
+        label    = "x2 Gold",
+        keywords = { "x2 gold", "2x gold", "double gold" },
+        remoteNames = { "x2 Gold", "x2Gold", "2xGold", "doubleGold", "Gold2x" },
+    },
+    {
+        id       = "EXTRAITEM",
+        label    = "Extra Item",
+        keywords = { "extra item", "+1 item" },
+        remoteNames = { "Extra Item", "ExtraItem", "extraItem", "BonusItem" },
+    },
+}
+
+-- Bảng mốc Map, Độ khó và hệ số giá Gold mở Map mới theo chuẩn Dungeon Quest Reborn
+-- (Giá thực tế trên UI Shop ở Sảnh sẽ tự động ghi đè lên giá ước lượng này ngay khi quét thấy)
 local DUNGEON_TIERS = {
-    -- Desert Temple (5 mức độ khó: 1, 6, 12, 20, 27)
-    { idx = 1,  map = "Desert Temple",     diff = "Easy",      req = 1   },
-    { idx = 2,  map = "Desert Temple",     diff = "Medium",    req = 6   },
-    { idx = 3,  map = "Desert Temple",     diff = "Hard",      req = 12  },
-    { idx = 4,  map = "Desert Temple",     diff = "Insane",    req = 20  },
-    { idx = 5,  map = "Desert Temple",     diff = "Nightmare", req = 27  },
+    { idx = 1,  map = "Desert Temple",     diff = "Easy",      req = 1,   mapUnlockReq = 1,   estPassCost = 25000          },
+    { idx = 2,  map = "Desert Temple",     diff = "Medium",    req = 6,   mapUnlockReq = 1,   estPassCost = 25000          },
+    { idx = 3,  map = "Desert Temple",     diff = "Hard",      req = 12,  mapUnlockReq = 1,   estPassCost = 25000          },
+    { idx = 4,  map = "Desert Temple",     diff = "Insane",    req = 20,  mapUnlockReq = 1,   estPassCost = 25000          },
+    { idx = 5,  map = "Desert Temple",     diff = "Nightmare", req = 27,  mapUnlockReq = 1,   estPassCost = 25000          },
 
-    -- Winter Outpost (5 mức độ khó: 33, 40, 45, 50, 55)
-    { idx = 6,  map = "Winter Outpost",    diff = "Easy",      req = 33  },
-    { idx = 7,  map = "Winter Outpost",    diff = "Medium",    req = 40  },
-    { idx = 8,  map = "Winter Outpost",    diff = "Hard",      req = 45  },
-    { idx = 9,  map = "Winter Outpost",    diff = "Insane",    req = 50  },
-    { idx = 10, map = "Winter Outpost",    diff = "Nightmare", req = 55  },
+    { idx = 6,  map = "Winter Outpost",    diff = "Easy",      req = 33,  mapUnlockReq = 33,  estPassCost = 150000         },
+    { idx = 7,  map = "Winter Outpost",    diff = "Medium",    req = 40,  mapUnlockReq = 33,  estPassCost = 150000         },
+    { idx = 8,  map = "Winter Outpost",    diff = "Hard",      req = 45,  mapUnlockReq = 33,  estPassCost = 150000         },
+    { idx = 9,  map = "Winter Outpost",    diff = "Insane",    req = 50,  mapUnlockReq = 33,  estPassCost = 150000         },
+    { idx = 10, map = "Winter Outpost",    diff = "Nightmare", req = 55,  mapUnlockReq = 33,  estPassCost = 150000         },
 
-    -- Các map từ Pirate Island trở đi (Insane & Nightmare cách nhau 5 cấp)
-    { idx = 11, map = "Pirate Island",     diff = "Insane",    req = 60  },
-    { idx = 12, map = "Pirate Island",     diff = "Nightmare", req = 65  },
-    { idx = 13, map = "King's Castle",     diff = "Insane",    req = 70  },
-    { idx = 14, map = "King's Castle",     diff = "Nightmare", req = 75  },
-    { idx = 15, map = "The Underworld",    diff = "Insane",    req = 80  },
-    { idx = 16, map = "The Underworld",    diff = "Nightmare", req = 85  },
-    { idx = 17, map = "Samurai Palace",    diff = "Insane",    req = 90  },
-    { idx = 18, map = "Samurai Palace",    diff = "Nightmare", req = 95  },
-    { idx = 19, map = "The Canals",        diff = "Insane",    req = 100 },
-    { idx = 20, map = "The Canals",        diff = "Nightmare", req = 105 },
-    { idx = 21, map = "Ghastly Harbor",    diff = "Insane",    req = 110 },
-    { idx = 22, map = "Ghastly Harbor",    diff = "Nightmare", req = 115 },
-    { idx = 23, map = "Steampunk Sewers",  diff = "Insane",    req = 120 },
-    { idx = 24, map = "Steampunk Sewers",  diff = "Nightmare", req = 125 },
-    { idx = 25, map = "Orbital Outpost",   diff = "Insane",    req = 135 },
-    { idx = 26, map = "Orbital Outpost",   diff = "Nightmare", req = 140 },
-    { idx = 27, map = "Volcanic Chambers", diff = "Insane",    req = 150 },
-    { idx = 28, map = "Volcanic Chambers", diff = "Nightmare", req = 155 },
-    { idx = 29, map = "Aquatic Temple",    diff = "Insane",    req = 160 },
-    { idx = 30, map = "Aquatic Temple",    diff = "Nightmare", req = 165 },
-    { idx = 31, map = "Enchanted Forest",  diff = "Insane",    req = 170 },
-    { idx = 32, map = "Enchanted Forest",  diff = "Nightmare", req = 175 },
-    { idx = 33, map = "Northern Lands",    diff = "Insane",    req = 180 },
-    { idx = 34, map = "Northern Lands",    diff = "Nightmare", req = 185 },
-    { idx = 35, map = "Gilded Skies",      diff = "Insane",    req = 190 },
-    { idx = 36, map = "Gilded Skies",      diff = "Nightmare", req = 195 },
+    { idx = 11, map = "Pirate Island",     diff = "Insane",    req = 60,  mapUnlockReq = 60,  estPassCost = 750000         },
+    { idx = 12, map = "Pirate Island",     diff = "Nightmare", req = 65,  mapUnlockReq = 60,  estPassCost = 750000         },
+    { idx = 13, map = "King's Castle",     diff = "Insane",    req = 70,  mapUnlockReq = 70,  estPassCost = 2500000        },
+    { idx = 14, map = "King's Castle",     diff = "Nightmare", req = 75,  mapUnlockReq = 70,  estPassCost = 2500000        },
+    { idx = 15, map = "The Underworld",    diff = "Insane",    req = 80,  mapUnlockReq = 80,  estPassCost = 7500000        },
+    { idx = 16, map = "The Underworld",    diff = "Nightmare", req = 85,  mapUnlockReq = 80,  estPassCost = 7500000        },
+    { idx = 17, map = "Samurai Palace",    diff = "Insane",    req = 90,  mapUnlockReq = 90,  estPassCost = 20000000       },
+    { idx = 18, map = "Samurai Palace",    diff = "Nightmare", req = 95,  mapUnlockReq = 90,  estPassCost = 20000000       },
+    { idx = 19, map = "The Canals",        diff = "Insane",    req = 100, mapUnlockReq = 100, estPassCost = 50000000       },
+    { idx = 20, map = "The Canals",        diff = "Nightmare", req = 105, mapUnlockReq = 100, estPassCost = 50000000       },
+    { idx = 21, map = "Ghastly Harbor",    diff = "Insane",    req = 110, mapUnlockReq = 110, estPassCost = 125000000      },
+    { idx = 22, map = "Ghastly Harbor",    diff = "Nightmare", req = 115, mapUnlockReq = 110, estPassCost = 125000000      },
+    { idx = 23, map = "Steampunk Sewers",  diff = "Insane",    req = 120, mapUnlockReq = 120, estPassCost = 300000000      },
+    { idx = 24, map = "Steampunk Sewers",  diff = "Nightmare", req = 125, mapUnlockReq = 120, estPassCost = 300000000      },
+    { idx = 25, map = "Orbital Outpost",   diff = "Insane",    req = 135, mapUnlockReq = 135, estPassCost = 750000000      },
+    { idx = 26, map = "Orbital Outpost",   diff = "Nightmare", req = 140, mapUnlockReq = 135, estPassCost = 750000000      },
+    { idx = 27, map = "Volcanic Chambers", diff = "Insane",    req = 150, mapUnlockReq = 150, estPassCost = 2000000000     },
+    { idx = 28, map = "Volcanic Chambers", diff = "Nightmare", req = 155, mapUnlockReq = 150, estPassCost = 2000000000     },
+    { idx = 29, map = "Aquatic Temple",    diff = "Insane",    req = 160, mapUnlockReq = 160, estPassCost = 5000000000     },
+    { idx = 30, map = "Aquatic Temple",    diff = "Nightmare", req = 165, mapUnlockReq = 160, estPassCost = 5000000000     },
+    { idx = 31, map = "Enchanted Forest",  diff = "Insane",    req = 170, mapUnlockReq = 170, estPassCost = 15000000000    },
+    { idx = 32, map = "Enchanted Forest",  diff = "Nightmare", req = 175, mapUnlockReq = 170, estPassCost = 15000000000    },
+    { idx = 33, map = "Northern Lands",    diff = "Insane",    req = 180, mapUnlockReq = 180, estPassCost = 40000000000    },
+    { idx = 34, map = "Northern Lands",    diff = "Nightmare", req = 185, mapUnlockReq = 180, estPassCost = 40000000000    },
+    { idx = 35, map = "Gilded Skies",      diff = "Insane",    req = 190, mapUnlockReq = 190, estPassCost = 100000000000   },
+    { idx = 36, map = "Gilded Skies",      diff = "Nightmare", req = 195, mapUnlockReq = 190, estPassCost = 100000000000   },
 }
 
 local function getTierForLevel(lvl)
@@ -95,11 +122,14 @@ end
 local wrapperState = {
     reExecute      = CUSTOM.AUTO_REEXECUTE,
     autoRehop      = CUSTOM.AUTO_REHOP,
+    autoBuyPass    = CUSTOM.AUTO_BUY_GAMEPASS,
     drawHud        = CUSTOM.DRAW_HUD,
     lobbyPlaceId   = nil,
     enteredTierIdx = nil,
     leaveSignalAt  = 0,
     partyLevels    = {},
+    ownedPasses    = {}, -- Lưu trạng thái OWNED của từng acc: ownedPasses[userId] = { VIP = true, X2GOLD = false, EXTRAITEM = false }
+    detectedCosts  = {}, -- Lưu giá Gold thực tế quét được từ UI Shop theo mốc mapUnlockReq
 }
 
 local function loadWrapperState()
@@ -108,13 +138,16 @@ local function loadWrapperState()
         if ok and exists then
             local ok2, data = pcall(function() return HttpService:JSONDecode(readfile(STATE_FILE)) end)
             if ok2 and type(data) == "table" then
-                if type(data.reExecute) == "boolean"     then wrapperState.reExecute = data.reExecute; CUSTOM.AUTO_REEXECUTE = data.reExecute end
-                if type(data.autoRehop) == "boolean"     then wrapperState.autoRehop = data.autoRehop; CUSTOM.AUTO_REHOP = data.autoRehop end
-                if type(data.drawHud) == "boolean"       then wrapperState.drawHud = data.drawHud; CUSTOM.DRAW_HUD = data.drawHud end
-                if type(data.lobbyPlaceId) == "number"   then wrapperState.lobbyPlaceId = data.lobbyPlaceId end
-                if type(data.enteredTierIdx) == "number" then wrapperState.enteredTierIdx = data.enteredTierIdx end
-                if type(data.leaveSignalAt) == "number"  then wrapperState.leaveSignalAt = data.leaveSignalAt end
-                if type(data.partyLevels) == "table"     then wrapperState.partyLevels = data.partyLevels end
+                if type(data.reExecute) == "boolean"      then wrapperState.reExecute = data.reExecute; CUSTOM.AUTO_REEXECUTE = data.reExecute end
+                if type(data.autoRehop) == "boolean"      then wrapperState.autoRehop = data.autoRehop; CUSTOM.AUTO_REHOP = data.autoRehop end
+                if type(data.autoBuyPass) == "boolean"    then wrapperState.autoBuyPass = data.autoBuyPass; CUSTOM.AUTO_BUY_GAMEPASS = data.autoBuyPass end
+                if type(data.drawHud) == "boolean"        then wrapperState.drawHud = data.drawHud; CUSTOM.DRAW_HUD = data.drawHud end
+                if type(data.lobbyPlaceId) == "number"    then wrapperState.lobbyPlaceId = data.lobbyPlaceId end
+                if type(data.enteredTierIdx) == "number"  then wrapperState.enteredTierIdx = data.enteredTierIdx end
+                if type(data.leaveSignalAt) == "number"   then wrapperState.leaveSignalAt = data.leaveSignalAt end
+                if type(data.partyLevels) == "table"      then wrapperState.partyLevels = data.partyLevels end
+                if type(data.ownedPasses) == "table"      then wrapperState.ownedPasses = data.ownedPasses end
+                if type(data.detectedCosts) == "table"    then wrapperState.detectedCosts = data.detectedCosts end
             end
         end
     end
@@ -126,9 +159,10 @@ local function saveWrapperState()
             if type(isfolder) == "function" and not isfolder("HarvardLabs") then
                 pcall(makefolder, "HarvardLabs")
             end
-            wrapperState.reExecute = CUSTOM.AUTO_REEXECUTE
-            wrapperState.autoRehop = CUSTOM.AUTO_REHOP
-            wrapperState.drawHud   = CUSTOM.DRAW_HUD
+            wrapperState.reExecute   = CUSTOM.AUTO_REEXECUTE
+            wrapperState.autoRehop   = CUSTOM.AUTO_REHOP
+            wrapperState.autoBuyPass = CUSTOM.AUTO_BUY_GAMEPASS
+            wrapperState.drawHud     = CUSTOM.DRAW_HUD
             writefile(STATE_FILE, HttpService:JSONEncode(wrapperState))
         end)
     end
@@ -136,7 +170,6 @@ end
 
 loadWrapperState()
 
--- Nhận diện chính xác đang ở Sảnh (Lobby) hay đang trong Dungeon
 local function isInDungeon()
     if workspace:FindFirstChild("Lobby") ~= nil then return false end
     if workspace:FindFirstChild("dungeon") ~= nil then return true end
@@ -183,8 +216,28 @@ end
 
 task.spawn(resolveLobbyPlaceId)
 
--- Đọc Level thật của nhân vật (Bỏ qua số 999 giả của chế độ Streamer)
+-- =====================================================================
+-- ĐỌC LEVEL THẬT & GOLD THẬT (BỎ QUA SỐ GIẢ 999 / 999,999 CỦA STREAMER)
+-- =====================================================================
 local preScanLevels = {}
+local preScanGold   = {}
+
+local function parseNumberWithSuffix(raw)
+    if type(raw) == "number" then return raw end
+    if type(raw) ~= "string" then return nil end
+    local clean = raw:gsub(",", ""):gsub("%$", ""):gsub("Gold", ""):gsub("gold", ""):gsub(":", "")
+    local numStr, suffix = clean:match("(%d+%.?%d*)%s*([kKmMbBtT]?)")
+    if not numStr then return nil end
+    local n = tonumber(numStr)
+    if not n then return nil end
+    local s = string.lower(suffix or "")
+    if s == "k" then n = n * 1e3
+    elseif s == "m" then n = n * 1e6
+    elseif s == "b" then n = n * 1e9
+    elseif s == "t" then n = n * 1e12 end
+    return math.floor(n)
+end
+
 local function readRawLevel(plr)
     if not plr then return nil end
     local ls = plr:FindFirstChild("leaderstats")
@@ -202,14 +255,6 @@ local function readRawLevel(plr)
             end
         end
     end
-    local attrLvl = plr:GetAttribute("Level") or plr:GetAttribute("level")
-    if attrLvl then
-        local n = tonumber(tostring(attrLvl):match("%d+"))
-        if n and n > 0 and n ~= 999 and n < 500 then
-            preScanLevels[plr.UserId] = n
-            return n
-        end
-    end
     local char = plr.Character or workspace:FindFirstChild(plr.Name)
     if char then
         for _, desc in ipairs(char:GetDescendants()) do
@@ -225,51 +270,298 @@ local function readRawLevel(plr)
     return preScanLevels[plr.UserId]
 end
 
+local function readRawGold(plr)
+    plr = plr or LocalPlayer
+    local ls = plr:FindFirstChild("leaderstats")
+    local candidates = {
+        plr:FindFirstChild("gold"),
+        plr:FindFirstChild("Gold"),
+        ls and (ls:FindFirstChild("Gold") or ls:FindFirstChild("gold")),
+        plr:FindFirstChild("Data") and plr.Data:FindFirstChild("Gold"),
+        plr:FindFirstChild("PlayerData") and plr.PlayerData:FindFirstChild("Gold"),
+    }
+    for _, obj in ipairs(candidates) do
+        if obj and obj:IsA("ValueBase") then
+            local rawStr = tostring(obj.Value):gsub(",", "")
+            if rawStr ~= "999999" then
+                local n = parseNumberWithSuffix(rawStr)
+                if n and n >= 0 then
+                    preScanGold[plr.UserId] = n
+                    return n
+                end
+            end
+        end
+    end
+    if plr == LocalPlayer then
+        local pgui = plr:FindFirstChild("PlayerGui")
+        if pgui then
+            for _, desc in ipairs(pgui:GetDescendants()) do
+                if desc:IsA("TextLabel") and string.lower(desc.Name):find("gold") then
+                    local rawTxt = desc.Text:gsub(",", "")
+                    if rawTxt ~= "999999" then
+                        local n = parseNumberWithSuffix(rawTxt)
+                        if n and n >= 0 then
+                            preScanGold[plr.UserId] = n
+                            return n
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return preScanGold[plr.UserId] or 0
+end
+
 for _, plr in ipairs(Players:GetPlayers()) do
     readRawLevel(plr)
 end
+readRawGold(LocalPlayer)
 
--- Hàm lấy Level thấp nhất của Party (CHỈ tính các acc trong Party, tuyệt đối KHÔNG quét người lạ ở Sảnh)
+-- =====================================================================
+-- QUÉT & MUA 3 GAMEPASS BẰNG GOLD (VIP -> x2 Gold -> Extra Item)
+-- =====================================================================
+local uidKey = tostring(LocalPlayer.UserId)
+wrapperState.ownedPasses[uidKey] = type(wrapperState.ownedPasses[uidKey]) == "table" and wrapperState.ownedPasses[uidKey] or {}
+
+-- Kiểm tra xem container UI của 1 ô Gamepass có chữ "OWNED" đang hiển thị hay không (như trong ảnh chụp)
+local function checkCardIsOwnedInUI(cardFrame)
+    if not cardFrame then return false end
+    for _, desc in ipairs(cardFrame:GetDescendants()) do
+        if (desc:IsA("TextLabel") or desc:IsA("TextButton")) and desc.Visible then
+            local t = string.upper(tostring(desc.Text or "")):gsub("^%s+", ""):gsub("%s+$", "")
+            if t == "OWNED" or t:find("OWNED", 1, true) then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+-- Tìm giá Gold hiển thị bên trong hoặc ngay cạnh ô Gamepass trong UI Shop
+local function extractGoldCostFromCardUI(cardFrame)
+    if not cardFrame then return nil end
+    local searchRoots = { cardFrame, cardFrame.Parent }
+    for _, root in ipairs(searchRoots) do
+        if root then
+            for _, desc in ipairs(root:GetDescendants()) do
+                if desc:IsA("TextLabel") or desc:IsA("TextButton") then
+                    local txt = string.lower(tostring(desc.Text or ""))
+                    -- Bỏ qua các nhãn tên như "20%+ exp", "x2 gold", "+1"
+                    if not txt:find("20%%") and not txt:find("x2") and not txt:find("%+1") and not txt:find("owned") then
+                        if txt:find("gold") or txt:match("^%s*[%d,%.]+[kmbKMB]?%s*$") then
+                            local val = parseNumberWithSuffix(txt)
+                            if val and val >= 1000 then
+                                return val
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+-- Quét toàn bộ PlayerGui & dữ liệu nhân vật để cập nhật trạng thái OWNED và giá Gold của 3 Gamepass
+local function scanGamepassShopUI()
+    local myLvl  = readRawLevel(LocalPlayer) or 1
+    local myTier = getTierForLevel(myLvl)
+    local unlockKey = tostring(myTier.mapUnlockReq or 1)
+    local foundCards = {}
+
+    -- 1. Kiểm tra trong các thư mục dữ liệu của LocalPlayer xem có BoolValue/Attribute của Gamepass không
+    for _, child in ipairs(LocalPlayer:GetDescendants()) do
+        if child:IsA("BoolValue") and child.Value == true then
+            local cn = string.lower(child.Name)
+            if cn:find("vip") then wrapperState.ownedPasses[uidKey]["VIP"] = true end
+            if cn:find("x2gold") or cn:find("2xgold") or cn:find("doublegold") then wrapperState.ownedPasses[uidKey]["X2GOLD"] = true end
+            if cn:find("extraitem") or cn:find("bonusitem") then wrapperState.ownedPasses[uidKey]["EXTRAITEM"] = true end
+        end
+    end
+
+    -- 2. Quét trong PlayerGui theo đúng nhãn chữ trong ảnh: "VIP cosmetics and 20%+ exp", "x2 Gold", "Extra Item"
+    local pgui = LocalPlayer:FindFirstChild("PlayerGui")
+    if pgui then
+        for _, desc in ipairs(pgui:GetDescendants()) do
+            if desc:IsA("TextLabel") or desc:IsA("TextButton") then
+                local txtLower = string.lower(tostring(desc.Text or "")):gsub("%s+", " ")
+                for _, passInfo in ipairs(GAMEPASS_PRIORITY) do
+                    for _, kw in ipairs(passInfo.keywords) do
+                        if txtLower:find(kw, 1, true) then
+                            local card = desc.Parent
+                            if card and card:IsA("GuiObject") then
+                                foundCards[passInfo.id] = card
+                                if checkCardIsOwnedInUI(card) or (card.Parent and checkCardIsOwnedInUI(card.Parent)) then
+                                    wrapperState.ownedPasses[uidKey][passInfo.id] = true
+                                end
+                                local uiCost = extractGoldCostFromCardUI(card)
+                                if uiCost and uiCost >= 1000 then
+                                    wrapperState.detectedCosts[unlockKey .. "_" .. passInfo.id] = uiCost
+                                end
+                            end
+                            break
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return foundCards
+end
+
+-- Xác định Gamepass tiếp theo cần mua (theo đúng thứ tự ưu tiên: VIP -> x2 Gold -> Extra Item) và lượng Gold cần thiết
+local function getNextGamepassToBuy()
+    scanGamepassShopUI()
+    local myLvl  = readRawLevel(LocalPlayer) or 1
+    local myTier = getTierForLevel(myLvl)
+    local unlockKey = tostring(myTier.mapUnlockReq or 1)
+    local ownedMap = wrapperState.ownedPasses[uidKey] or {}
+
+    for _, passInfo in ipairs(GAMEPASS_PRIORITY) do
+        if not ownedMap[passInfo.id] then
+            local cost = wrapperState.detectedCosts[unlockKey .. "_" .. passInfo.id] or myTier.estPassCost
+            return passInfo, cost
+        end
+    end
+    return nil, 0 -- Đã sở hữu đủ cả 3 Gamepass!
+end
+
+-- Thực thi mua Gamepass ở Sảnh (kích hoạt cả nút UI lẫn Remote trong ReplicatedStorage)
+local function executeBuyGamepassInLobby(passInfo)
+    if not passInfo then return false end
+    local foundCards = scanGamepassShopUI()
+    local card = foundCards[passInfo.id]
+
+    -- Cách 1: Kích hoạt trực tiếp nút bấm của ô Gamepass trên giao diện (nếu có)
+    if card then
+        local targets = { card }
+        for _, d in ipairs(card:GetDescendants()) do
+            if d:IsA("GuiButton") then targets[#targets + 1] = d end
+        end
+        if card.Parent and card.Parent:IsA("GuiButton") then
+            targets[#targets + 1] = card.Parent
+        end
+        for _, btn in ipairs(targets) do
+            if btn:IsA("GuiButton") then
+                pcall(function()
+                    if type(firesignal) == "function" then
+                        firesignal(btn.MouseButton1Click)
+                        firesignal(btn.Activated)
+                    end
+                end)
+            end
+        end
+    end
+
+    -- Cách 2: Gọi Remote mua Gamepass bằng Gold trong ReplicatedStorage
+    pcall(function()
+        for _, desc in ipairs(ReplicatedStorage:GetDescendants()) do
+            local n = string.lower(desc.Name)
+            if n:find("gamepass") or n:find("buypass") or n:find("goldshop") or n:find("buyperk") or n:find("purchase") then
+                for _, argName in ipairs(passInfo.remoteNames) do
+                    if desc:IsA("RemoteEvent") then
+                        pcall(function() desc:FireServer(argName) end)
+                        pcall(function() desc:FireServer(passInfo.label) end)
+                    elseif desc:IsA("RemoteFunction") then
+                        task.spawn(function()
+                            pcall(function() desc:InvokeServer(argName) end)
+                            pcall(function() desc:InvokeServer(passInfo.label) end)
+                        end)
+                    end
+                end
+            end
+        end
+    end)
+
+    task.wait(0.4)
+    scanGamepassShopUI()
+    return wrapperState.ownedPasses[uidKey][passInfo.id] == true
+end
+
+-- =====================================================================
+-- ĐỒNG BỘ PARTY: KIỂM TRA TẤT CẢ ALT ĐÃ SẴN SÀNG Ở SẢNH CHƯA
+-- =====================================================================
 local context
-local function getPartyMinLevel()
+local allAltsReadySince = nil
+
+local function syncAndCheckPartyStatus()
     loadWrapperState()
     local now = os.time()
     wrapperState.partyLevels = type(wrapperState.partyLevels) == "table" and wrapperState.partyLevels or {}
 
-    local myLvl = readRawLevel(LocalPlayer) or 1
-    wrapperState.partyLevels[string.lower(LocalPlayer.Name)] = {
-        name = LocalPlayer.Name,
-        lvl  = myLvl,
-        ts   = now,
+    local myLvl  = readRawLevel(LocalPlayer) or 1
+    local myGold = readRawGold(LocalPlayer) or 0
+    local myChar = LocalPlayer.Character
+    local myHrp  = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    local myHum  = myChar and myChar:FindFirstChildOfClass("Humanoid")
+    local myReady = (not isInDungeon()) and (myHrp ~= nil) and (myHum ~= nil and myHum.Health > 0)
+
+    local myKey = string.lower(LocalPlayer.Name)
+    local prevInfo = wrapperState.partyLevels[myKey] or {}
+
+    wrapperState.partyLevels[myKey] = {
+        name            = LocalPlayer.Name,
+        lvl             = myLvl,
+        gold            = myGold,
+        inLobby         = not isInDungeon(),
+        ready           = myReady,
+        jobId           = tostring(game.JobId),
+        buyingPassUntil = prevInfo.buyingPassUntil or 0,
+        ts              = now,
     }
 
     if isInDungeon() then
-        -- Khi đang ở trong Dungeon: chỉ có thành viên Party của bạn trong server, lưu tất cả vào danh sách Party
+        -- Khi đang ở trong Dungeon: ghi nhận toàn bộ thành viên trong server vào danh sách Party
         for _, plr in ipairs(Players:GetPlayers()) do
+            local k = string.lower(plr.Name)
             local l = readRawLevel(plr)
             if l and l > 0 then
-                wrapperState.partyLevels[string.lower(plr.Name)] = {
-                    name = plr.Name,
-                    lvl  = l,
-                    ts   = now,
+                local old = wrapperState.partyLevels[k] or {}
+                wrapperState.partyLevels[k] = {
+                    name            = plr.Name,
+                    lvl             = l,
+                    gold            = old.gold or 0,
+                    inLobby         = false,
+                    ready           = false,
+                    jobId           = tostring(game.JobId),
+                    buyingPassUntil = old.buyingPassUntil or 0,
+                    ts              = now,
                 }
             end
         end
     else
-        -- Khi đang ở Sảnh: chỉ cập nhật những tài khoản ĐÃ thuộc Party (hoặc có trong CFG.carryName), bỏ qua hoàn toàn người lạ!
-        local carryName = (context and context.CFG and string.lower(tostring(context.CFG.carryName or ""))) or ""
-        for _, plr in ipairs(Players:GetPlayers()) do
-            local k = string.lower(plr.Name)
-            local isKnownMember = wrapperState.partyLevels[k] and (now - (tonumber(wrapperState.partyLevels[k].ts) or 0) < 900)
-            local isCarryTarget = (#carryName > 1) and carryName:find(k, 1, true)
-            if isKnownMember or isCarryTarget then
-                local l = readRawLevel(plr)
-                if l and l > 0 then
-                    wrapperState.partyLevels[k] = {
-                        name = plr.Name,
-                        lvl  = l,
-                        ts   = now,
-                    }
+        -- Khi đang ở Sảnh: cập nhật thêm trạng thái thực tế của các thành viên Party đã biết hoặc trong CFG.carryName
+        local carryStr = (context and context.CFG and string.lower(tostring(context.CFG.carryName or ""))) or ""
+        for part in carryStr:gmatch("[^,%s]+") do
+            if #part > 1 and not wrapperState.partyLevels[part] then
+                wrapperState.partyLevels[part] = { name = part, lvl = myLvl, inLobby = false, ready = false, ts = now }
+            end
+        end
+
+        for k, info in pairs(wrapperState.partyLevels) do
+            if type(info) == "table" and (now - (tonumber(info.ts) or 0) < 900) then
+                local plrInServer = nil
+                for _, p in ipairs(Players:GetPlayers()) do
+                    if string.lower(p.Name) == k then
+                        plrInServer = p
+                        break
+                    end
+                end
+                if plrInServer then
+                    local l   = readRawLevel(plrInServer) or info.lvl or 1
+                    local ch  = plrInServer.Character
+                    local hrp = ch and ch:FindFirstChild("HumanoidRootPart")
+                    local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+                    info.name    = plrInServer.Name
+                    info.lvl     = l
+                    info.inLobby = true
+                    info.ready   = (hrp ~= nil) and (hum ~= nil and hum.Health > 0)
+                    info.ts      = now
+                else
+                    -- Thành viên Party này chưa tải xong vào Server Sảnh hiện tại!
+                    info.inLobby = false
+                    info.ready   = false
                 end
             end
         end
@@ -277,17 +569,44 @@ local function getPartyMinLevel()
 
     saveWrapperState()
 
+    -- Tính Min Level của Party & kiểm tra xem TẤT CẢ các Alt trong Party đã sẵn sàng ở Sảnh chưa
     local minLvl, minOwner = myLvl, LocalPlayer.Name
+    local totalMembers     = 0
+    local readyMembers     = 0
+    local missingAltName   = nil
+    local anyoneBuyingPass = false
+
     for k, info in pairs(wrapperState.partyLevels) do
-        if type(info) == "table" and tonumber(info.lvl) and (now - (tonumber(info.ts) or 0) < 900) then
-            if info.lvl < minLvl then
-                minLvl = info.lvl
+        if type(info) == "table" and (now - (tonumber(info.ts) or 0) < 900) then
+            totalMembers = totalMembers + 1
+            if tonumber(info.lvl) and info.lvl < minLvl then
+                minLvl   = info.lvl
                 minOwner = info.name or k
+            end
+            if tonumber(info.buyingPassUntil) and now < info.buyingPassUntil then
+                anyoneBuyingPass = true
+            end
+            if info.inLobby and info.ready then
+                readyMembers = readyMembers + 1
+            else
+                missingAltName = info.name or k
             end
         end
     end
 
-    return minLvl, minOwner
+    local allAltsReady = (readyMembers >= totalMembers) and (not anyoneBuyingPass)
+    if allAltsReady and not isInDungeon() then
+        if not allAltsReadySince then allAltsReadySince = os.clock() end
+    else
+        allAltsReadySince = nil
+    end
+
+    -- Chỉ cho phép bắt đầu Dungeon sau khi toàn bộ Alt đã có mặt đầy đủ ở Sảnh ít nhất ALT_READY_GRACE giây (3s)
+    local canStartDungeonNow = allAltsReady
+        and (allAltsReadySince ~= nil)
+        and ((os.clock() - allAltsReadySince) >= CUSTOM.ALT_READY_GRACE)
+
+    return minLvl, minOwner, canStartDungeonNow, readyMembers, totalMembers, missingAltName, anyoneBuyingPass
 end
 
 -- 1. Tải và khởi chạy script gốc nguyên bản 100% ----------------------
@@ -339,7 +658,7 @@ if not context then error("[Boost] Không tìm thấy context trong getgc") end
 local CFG, RT = context.CFG, context.RT
 _G = _G or {}; getgenv = getgenv or function() return _G end
 
--- 3. Áp dụng tùy chỉnh tầm đánh (Scale) & Khóa Replay sớm --------------
+-- 3. Áp dụng tùy chỉnh tầm đánh (Scale) & Khóa chờ Alt ----------------
 local KEYS = {
     "aoeRadius", "aoeDistance",
     "abilityRadius", "abilityRangeKnown",
@@ -370,6 +689,7 @@ end
 captureBaseCFG()
 
 local allowDungeonReplayNow = false
+local isBuyingGamepassWait  = false
 
 local function applyCustomSettings()
     for _, k in ipairs(KEYS) do
@@ -401,32 +721,36 @@ local function applyCustomSettings()
         CFG.speedBurst = CUSTOM.BURST_SPEED
     end
     if CUSTOM.STREAMER ~= nil then CFG.streamer = CUSTOM.STREAMER end
-    if CUSTOM.AUTO_QUEUE ~= nil then CFG.autoQueue = CUSTOM.AUTO_QUEUE end
 
-    -- Tắt giả số 999 trên Level để luôn đọc được Level thật khi vừa lên cấp
+    -- Tắt giả số 999 Level và 999,999 Gold để luôn đọc đúng Level thật và Gold thật!
     CFG.streamerLevel       = false
+    CFG.streamerWealth      = false
     CFG.streamerOthers      = false
     CFG.streamerLeaderboard = false
 
-    -- Đồng bộ ngay Map & Độ khó theo Party Min Level
-    local minLvl = getPartyMinLevel()
+    local minLvl, _, canStartNow = syncAndCheckPartyStatus()
     local tier = getTierForLevel(minLvl)
     CFG.autoQueueMap        = tier.map
     CFG.autoQueueDifficulty = tier.diff
     CFG.autoQueueMinLevel   = 0
-    CFG.autoStartDungeon    = true
 
-    -- Nếu đang trong Dungeon mà chưa hạ xong Boss thứ 3 (Boss cuối), khóa chặt autoQueueReplay = false!
-    if isInDungeon() and not allowDungeonReplayNow then
-        CFG.autoQueueReplay = false
+    if not isInDungeon() then
+        -- Ở Sảnh: Chỉ bật autoQueue & autoStartDungeon khi TẤT CẢ Alt đã sẵn sàng và KHÔNG trong 5s mua Gamepass!
+        local readyToQueue = canStartNow and (not isBuyingGamepassWait)
+        CFG.autoQueue        = readyToQueue
+        CFG.autoStartDungeon = readyToQueue
+        CFG.autoQueueReplay  = false
+    else
+        if not allowDungeonReplayNow then
+            CFG.autoQueueReplay = false
+        end
     end
 end
 
--- Loại bỏ các khóa tầm đánh, streamerLevel và autoQueueReplay khỏi PERSIST để file JSON không tự bật lại Replay sớm
 if type(context.PERSIST) == "table" then
     for i = #context.PERSIST, 1, -1 do
         local key = context.PERSIST[i]
-        if key == "streamerLevel" or key == "streamerOthers" or key == "streamerLeaderboard" or key == "autoQueueReplay" then
+        if key == "streamerLevel" or key == "streamerWealth" or key == "streamerOthers" or key == "streamerLeaderboard" or key == "autoQueueReplay" then
             table.remove(context.PERSIST, i)
         else
             for _, k in ipairs(KEYS) do
@@ -526,7 +850,7 @@ end
 if type(context.gsSlotReady) == "function" then context.gsSlotReady = gate(context.gsSlotReady) end
 if type(context.slotReady) == "function" then context.slotReady = gate(context.slotReady) end
 
--- 6. Nhận diện chính xác Boss thứ 3 (Boss cuối) đã chết & Chuyển Độ Khó
+-- 6. Nhận diện chính xác Boss thứ 3 (Boss cuối) đã chết ---------------
 local seenBossModels   = {}
 local killedBossModels = {}
 local thirdBossSeen    = false
@@ -546,7 +870,6 @@ local function isThirdOrFinalBossName(nameStr)
         or s:find("vytelus", 1, true)
 end
 
--- Kiểm tra xem trong Dungeon còn cửa chặn (barrier) nào chưa mở không
 local function hasAnyClosedBarrierInDungeon()
     local dFolder = workspace:FindFirstChild("dungeon")
     if not dFolder then return false end
@@ -564,7 +887,6 @@ local function hasAnyClosedBarrierInDungeon()
     return false
 end
 
--- Kiểm tra giao diện Kết thúc Dungeon / Nút Replay chính thức của Game (chỉ hiện sau khi Boss cuối chết)
 local function isGameDungeonEndGuiVisible()
     local pgui = LocalPlayer:FindFirstChild("PlayerGui")
     if not pgui then return false end
@@ -589,7 +911,6 @@ local function isGameDungeonEndGuiVisible()
     return false
 end
 
--- Cập nhật danh sách các Boss đã xuất hiện và đã bị tiêu diệt trong lần chạy này
 local function updateBossProgress()
     local RD = context.RD
     local anyBossAlive = false
@@ -619,8 +940,7 @@ local function updateBossProgress()
         end
     end
 
-    -- Kiểm tra các Boss trong seenBossModels đã về 0 máu hoặc bị xóa khỏi workspace sau khi chết
-    for m, bName in pairs(seenBossModels) do
+    for m, _ in pairs(seenBossModels) do
         local hum = m and m.Parent and m:FindFirstChildOfClass("Humanoid")
         if not m or not m.Parent or (hum and hum.Health <= 0) then
             killedBossModels[m] = true
@@ -630,12 +950,11 @@ local function updateBossProgress()
         end
     end
 
-    local numSeen   = countTableEntries(seenBossModels)
-    local numKilled = countTableEntries(killedBossModels)
-    local endGuiUp  = isGameDungeonEndGuiVisible()
-    local hasBarrier= hasAnyClosedBarrierInDungeon()
+    local numSeen    = countTableEntries(seenBossModels)
+    local numKilled  = countTableEntries(killedBossModels)
+    local endGuiUp   = isGameDungeonEndGuiVisible()
+    local hasBarrier = hasAnyClosedBarrierInDungeon()
 
-    -- Xác nhận Boss thứ 3 (hoặc Boss cuối cùng khi toàn bộ cửa barrier đã mở & hiện bảng kết thúc) đã bị hạ gục:
     local finalBossDefeated = false
     if not anyBossAlive then
         if endGuiUp then
@@ -645,7 +964,7 @@ local function updateBossProgress()
         end
     end
 
-    return finalBossDefeated, numKilled, numSeen, anyBossAlive, anyEnemyAlive, hasBarrier
+    return finalBossDefeated, numKilled, numSeen
 end
 
 -- 7. Auto Re-Execute & Auto Re-Hop -----------------------------------
@@ -678,7 +997,7 @@ LocalPlayer.OnTeleport:Connect(function()
 end)
 
 local isTeleportingToLobby = false
-local function teleportPartyToLobby(reason, newTier)
+local function teleportPartyToLobby(reason, newTier, forGamepassBuy)
     if isTeleportingToLobby then return end
     isTeleportingToLobby = true
 
@@ -686,6 +1005,11 @@ local function teleportPartyToLobby(reason, newTier)
         CFG.autoQueueMap        = newTier.map
         CFG.autoQueueDifficulty = newTier.diff
         wrapperState.enteredTierIdx = newTier.idx
+    end
+    if forGamepassBuy then
+        local myKey = string.lower(LocalPlayer.Name)
+        wrapperState.partyLevels[myKey] = wrapperState.partyLevels[myKey] or {}
+        wrapperState.partyLevels[myKey].buyingPassUntil = os.time() + 12
     end
     wrapperState.leaveSignalAt = os.time()
     saveWrapperState()
@@ -806,7 +1130,7 @@ local function tryInjectNativeCard()
 
     local card = Instance.new("Frame")
     card.Name = "HLNativeBoostSection"
-    card.Size = UDim2.new(1, 0, 0, 175)
+    card.Size = UDim2.new(1, 0, 0, 215)
     card.BackgroundColor3 = Color3.fromRGB(20, 20, 23)
     card.BorderSizePixel = 0
     card.LayoutOrder = -9999
@@ -815,25 +1139,25 @@ local function tryInjectNativeCard()
     local st = Instance.new("UIStroke", card); st.Color = Color3.fromRGB(40, 40, 46); st.Thickness = 1
 
     local title = Instance.new("TextLabel", card)
-    title.Size = UDim2.new(1, -28, 0, 28)
+    title.Size = UDim2.new(1, -28, 0, 26)
     title.Position = UDim2.new(0, 14, 0, 4)
     title.BackgroundTransparency = 1
-    title.Text = "AutoMap Party, Boss 3 Guard & Re-Execute"
+    title.Text = "Party Ready Sync, Auto Gamepass & Boss 3 Guard"
     title.TextColor3 = Color3.fromRGB(235, 65, 45)
     title.Font = Enum.Font.GothamBold
     title.TextSize = 12
     title.TextXAlignment = Enum.TextXAlignment.Left
 
     local statusLbl = Instance.new("TextLabel", card)
-    statusLbl.Size = UDim2.new(1, -28, 0, 32)
-    statusLbl.Position = UDim2.new(0, 14, 0, 32)
+    statusLbl.Size = UDim2.new(1, -28, 0, 36)
+    statusLbl.Position = UDim2.new(0, 14, 0, 30)
     statusLbl.BackgroundTransparency = 1
     statusLbl.TextColor3 = Color3.fromRGB(160, 160, 170)
     statusLbl.Font = Enum.Font.GothamMedium
     statusLbl.TextSize = 11
     statusLbl.TextWrapped = true
     statusLbl.TextXAlignment = Enum.TextXAlignment.Left
-    statusLbl.Text = "Đang kiểm tra Level Party & tiến độ Boss..."
+    statusLbl.Text = "Đang kiểm tra trạng thái Party, Tiến độ Boss & Gamepass..."
     hubStatusText = statusLbl
 
     local function makeToggleRow(yPos, text, key, cb)
@@ -883,28 +1207,40 @@ local function tryInjectNativeCard()
         refresh()
     end
 
-    makeToggleRow(68,  "Auto Re-Execute (Tự chạy lại khi qua màn)", "AUTO_REEXECUTE", function(v)
+    makeToggleRow(70,  "Tự mua Gamepass bằng Gold (VIP -> x2 Gold -> Extra Item)", "AUTO_BUY_GAMEPASS")
+    makeToggleRow(104, "Auto Re-Execute (Tự chạy lại khi qua màn)", "AUTO_REEXECUTE", function(v)
         if v then registerAutoReExecute() end
     end)
-    makeToggleRow(102, "Auto Re-Hop (Tự về Sảnh khi mất kết nối)", "AUTO_REHOP")
-    makeToggleRow(136, "Hiển thị vòng tầm đánh dưới chân (HUD)", "DRAW_HUD", function()
+    makeToggleRow(138, "Auto Re-Hop (Tự về Sảnh khi mất kết nối)", "AUTO_REHOP")
+    makeToggleRow(172, "Hiển thị vòng tầm đánh dưới chân (HUD)", "DRAW_HUD", function()
         updateHudPartVisibility()
     end)
 end
 
--- 9. Luồng kiểm soát Tiến độ Boss thứ 3 & Chuyển Độ khó khi đủ Req Lvl
+-- 9. Luồng điều phối: Đợi đủ Alt Sẵn Sàng, Mua Gamepass (Wait 5s) & Bảo vệ Drop Boss 3
+local function formatGoldShort(n)
+    n = tonumber(n) or 0
+    if n >= 1e12 then return ("%.2fT"):format(n / 1e12)
+    elseif n >= 1e9 then return ("%.2fB"):format(n / 1e9)
+    elseif n >= 1e6 then return ("%.2fM"):format(n / 1e6)
+    elseif n >= 1e3 then return ("%.1fK"):format(n / 1e3) end
+    return tostring(n)
+end
+
 task.spawn(function()
-    local finalBossDeadAt = nil
+    local finalBossDeadAt     = nil
     local dungeonStartTierIdx = nil
-    local lastQueueAttemptAt = 0
+    local lastQueueAttemptAt  = 0
 
     while not RT.destroyed do
         tryInjectNativeCard()
 
-        local minLvl, minOwner = getPartyMinLevel()
+        local minLvl, minOwner, canStartDungeonNow, readyCount, totalCount, missingAlt, anyoneBuyingPass = syncAndCheckPartyStatus()
         local targetTier = getTierForLevel(minLvl)
+        local myGold     = readRawGold(LocalPlayer) or 0
+        local nextPass, nextPassCost = getNextGamepassToBuy()
+        local canAffordNextPass = CUSTOM.AUTO_BUY_GAMEPASS and (nextPass ~= nil) and (nextPassCost > 0) and (myGold >= nextPassCost)
 
-        -- Luôn đồng bộ Map & Độ khó mục tiêu vào CFG (nếu thay đổi thì lưu ngay)
         if CFG.autoQueueMap ~= targetTier.map or CFG.autoQueueDifficulty ~= targetTier.diff then
             CFG.autoQueueMap        = targetTier.map
             CFG.autoQueueDifficulty = targetTier.diff
@@ -913,115 +1249,176 @@ task.spawn(function()
             if type(context.refreshAll) == "function" then pcall(context.refreshAll) end
         end
 
+        local passStatusStr = nextPass
+            and ("GP tiếp: %s (%s/%s Gold)"):format(nextPass.id, formatGoldShort(myGold), formatGoldShort(nextPassCost))
+            or "Gamepass: ĐÃ MUA ĐỦ 3/3 (OWNED)"
+
         if not isInDungeon() then
-            -- ĐANG Ở SẢNH (LOBBY)
+            -- ================= ĐANG Ở SẢNH (LOBBY) =================
             resolveLobbyPlaceId()
             table.clear(seenBossModels)
             table.clear(killedBossModels)
-            thirdBossSeen          = false
-            finalBossDeadAt        = nil
-            allowDungeonReplayNow  = false
-            dungeonStartTierIdx    = targetTier.idx
+            thirdBossSeen               = false
+            finalBossDeadAt             = nil
+            allowDungeonReplayNow       = false
+            dungeonStartTierIdx         = targetTier.idx
             wrapperState.enteredTierIdx = targetTier.idx
             saveWrapperState()
 
-            CFG.autoQueue       = true
-            CFG.autoQueueReplay = false
+            -- BƯỚC A: Nếu đủ Gold mua Gamepass ưu tiên tiếp theo -> Khóa vào Dungeon và bật lệnh WAIT 5S để mua xong Gamepass!
+            if canAffordNextPass then
+                isBuyingGamepassWait = true
+                CFG.autoQueue        = false
+                CFG.autoStartDungeon = false
+                CFG.autoQueueReplay  = false
 
-            -- Hỗ trợ gọi tạo phòng đúng Độ khó mới ở Sảnh nếu sau 6s chưa vào phòng
-            if os.clock() - lastQueueAttemptAt > 6 then
-                lastQueueAttemptAt = os.clock()
-                pcall(function()
-                    local remotes = ReplicatedStorage:FindFirstChild("remotes")
-                    local createLobby = remotes and remotes:FindFirstChild("createLobby")
-                    local startDungeon = remotes and remotes:FindFirstChild("startDungeon")
-                    if createLobby and createLobby:IsA("RemoteFunction") then
-                        task.spawn(function()
-                            pcall(function()
-                                createLobby:InvokeServer(targetTier.map, targetTier.diff, 0, CFG.autoQueuePrivate ~= false, CFG.autoQueueHardcore == true, false)
-                            end)
-                        end)
-                    elseif createLobby and createLobby:IsA("RemoteEvent") then
-                        pcall(function()
-                            createLobby:FireServer(targetTier.map, targetTier.diff, 0, CFG.autoQueuePrivate ~= false, CFG.autoQueueHardcore == true, false)
-                        end)
+                local myKey = string.lower(LocalPlayer.Name)
+                wrapperState.partyLevels[myKey] = wrapperState.partyLevels[myKey] or {}
+                wrapperState.partyLevels[myKey].buyingPassUntil = os.time() + math.ceil(CUSTOM.GAMEPASS_WAIT_TIME) + 2
+                saveWrapperState()
+
+                local waitStart = os.clock()
+                while os.clock() - waitStart < CUSTOM.GAMEPASS_WAIT_TIME do
+                    local rem = CUSTOM.GAMEPASS_WAIT_TIME - (os.clock() - waitStart)
+                    if hubStatusText then
+                        hubStatusText.Text = ("SẢNH [WAIT %.1fs MUA GAMEPASS] -> Đang mua: %s (%s Gold)...")
+                            :format(math.max(0, rem), nextPass.label, formatGoldShort(nextPassCost))
                     end
-                    if startDungeon and startDungeon:IsA("RemoteEvent") then
-                        task.delay(2, function()
-                            if not isInDungeon() then pcall(function() startDungeon:FireServer() end) end
-                        end)
-                    end
-                end)
+                    executeBuyGamepassInLobby(nextPass)
+                    task.wait(0.8)
+                end
+
+                -- Đánh dấu đã xử lý đợt mua này (nếu UI Shop đã hiện OWNED thì tự chuyển sang Gamepass kế tiếp)
+                scanGamepassShopUI()
+                wrapperState.partyLevels[myKey].buyingPassUntil = 0
+                saveWrapperState()
+                isBuyingGamepassWait = false
             end
 
-            if hubStatusText then
-                hubStatusText.Text = ("Sảnh | Party Min Lvl: %d (%s) -> Tạo phòng: %s [%s - Req Lv.%d]")
-                    :format(minLvl, tostring(minOwner), targetTier.map, targetTier.diff, targetTier.req)
+            -- BƯỚC B: Kiểm tra tất cả Alt trong Party đã sẵn sàng ở Sảnh chưa
+            if not canStartDungeonNow or isBuyingGamepassWait then
+                -- CHƯA ĐỦ ALT SẴN SÀNG -> Tạm khóa autoQueue & autoStartDungeon để đợi Alt!
+                CFG.autoQueue        = false
+                CFG.autoStartDungeon = false
+                CFG.autoQueueReplay  = false
+
+                local waitReason = anyoneBuyingPass and "Đang đợi thành viên mua Gamepass (5s)..."
+                    or ("Đang đợi Alt sẵn sàng (%d/%d - Chờ: %s)..."):format(readyCount, totalCount, tostring(missingAlt or "Alt"))
+
+                if hubStatusText then
+                    hubStatusText.Text = ("Sảnh | %s\nMin Lvl: %d (%s) -> %s [%s] | %s")
+                        :format(waitReason, minLvl, tostring(minOwner), targetTier.map, targetTier.diff, passStatusStr)
+                end
+            else
+                -- TẤT CẢ ALT ĐÃ SẴN SÀNG 100% -> Cho phép Tạo phòng & Bắt đầu Dungeon!
+                CFG.autoQueue        = true
+                CFG.autoStartDungeon = true
+                CFG.autoQueueReplay  = false
+
+                if os.clock() - lastQueueAttemptAt > 6 then
+                    lastQueueAttemptAt = os.clock()
+                    pcall(function()
+                        local remotes = ReplicatedStorage:FindFirstChild("remotes")
+                        local createLobby = remotes and remotes:FindFirstChild("createLobby")
+                        local startDungeon = remotes and remotes:FindFirstChild("startDungeon")
+                        if createLobby and createLobby:IsA("RemoteFunction") then
+                            task.spawn(function()
+                                pcall(function()
+                                    createLobby:InvokeServer(targetTier.map, targetTier.diff, 0, CFG.autoQueuePrivate ~= false, CFG.autoQueueHardcore == true, false)
+                                end)
+                            end)
+                        elseif createLobby and createLobby:IsA("RemoteEvent") then
+                            pcall(function()
+                                createLobby:FireServer(targetTier.map, targetTier.diff, 0, CFG.autoQueuePrivate ~= false, CFG.autoQueueHardcore == true, false)
+                            end)
+                        end
+                        if startDungeon and startDungeon:IsA("RemoteEvent") then
+                            task.delay(2.5, function()
+                                if not isInDungeon() and canStartDungeonNow then
+                                    pcall(function() startDungeon:FireServer() end)
+                                end
+                            end)
+                        end
+                    end)
+                end
+
+                if hubStatusText then
+                    hubStatusText.Text = ("Sảnh [Alt Ready %d/%d] | Min Lvl: %d -> Vào: %s [%s]\n%s")
+                        :format(readyCount, totalCount, minLvl, targetTier.map, targetTier.diff, passStatusStr)
+                end
             end
         else
-            -- ĐANG TRONG DUNGEON
-            -- Khóa mốc Tier lúc bắt đầu vào Dungeon (chỉ lấy 1 lần đầu trận trước khi giết Boss để so sánh khi lên cấp)
+            -- ================= ĐANG TRONG DUNGEON =================
             if not dungeonStartTierIdx then
                 dungeonStartTierIdx = wrapperState.enteredTierIdx or targetTier.idx
                 wrapperState.enteredTierIdx = dungeonStartTierIdx
                 saveWrapperState()
             end
 
-            -- Nếu một acc khác trong Party vừa phát tín hiệu về Sảnh nâng Độ khó (trong vòng 20s qua)
+            -- Nếu có tín hiệu đồng bộ từ thành viên trong Party yêu cầu về Sảnh (để nâng Độ khó hoặc mua Gamepass)
             if wrapperState.leaveSignalAt and (os.time() - wrapperState.leaveSignalAt <= 20) then
-                if targetTier.idx > dungeonStartTierIdx then
-                    teleportPartyToLobby("Đồng bộ theo Party về Sảnh nâng Độ khó/Map", targetTier)
+                if (targetTier.idx > dungeonStartTierIdx) or canAffordNextPass then
+                    teleportPartyToLobby("Đồng bộ theo Party về Sảnh", targetTier, canAffordNextPass)
                     break
                 end
             end
 
-            local finalBossDead, numKilled, numSeen, anyBossAlive, anyEnemyAlive, hasBarrier = updateBossProgress()
+            local finalBossDead, numKilled, _ = updateBossProgress()
             local needUpgradeDiffOrMap = (targetTier.idx > dungeonStartTierIdx)
-            local progressMsg = ("Boss đã hạ: %d/3"):format(numKilled)
+            local progressMsg = ("Boss: %d/3"):format(numKilled)
 
             if finalBossDead then
                 if not finalBossDeadAt then
                     finalBossDeadAt = os.clock()
-                    print(("[Boost] Đã hạ Boss cuối (Boss %d)! Chờ %.1fs nhận Drop & XP..."):format(math.max(numKilled, 3), CUSTOM.LOOT_WAIT_TIME))
+                    print(("[Boost] Đã hạ Boss thứ 3! Chờ %.1fs nhận Drop & Gold..."):format(CUSTOM.LOOT_WAIT_TIME))
                 end
                 local waited = os.clock() - finalBossDeadAt
 
                 if waited >= CUSTOM.LOOT_WAIT_TIME then
-                    -- Quét lại Level một lần nữa sau khi nhận XP của Boss thứ 3
-                    minLvl, minOwner = getPartyMinLevel()
-                    targetTier = getTierForLevel(minLvl)
-                    needUpgradeDiffOrMap = (targetTier.idx > dungeonStartTierIdx)
+                    minLvl, minOwner = syncAndCheckPartyStatus()
+                    targetTier       = getTierForLevel(minLvl)
+                    myGold           = readRawGold(LocalPlayer) or 0
+                    nextPass, nextPassCost = getNextGamepassToBuy()
+                    canAffordNextPass      = CUSTOM.AUTO_BUY_GAMEPASS and (nextPass ~= nil) and (nextPassCost > 0) and (myGold >= nextPassCost)
+                    needUpgradeDiffOrMap   = (targetTier.idx > dungeonStartTierIdx)
 
-                    if needUpgradeDiffOrMap then
-                        -- Đã đủ req lvl lên Độ khó mới / Map mới -> Khóa Replay và đưa cả Party về Sảnh!
+                    if canAffordNextPass then
+                        -- Đã đủ Gold mua Gamepass ưu tiên tiếp theo -> Back về Lobby & bật lệnh Wait 5s để mua!
                         allowDungeonReplayNow = false
                         CFG.autoQueueReplay   = false
-                        teleportPartyToLobby(("Đủ Req Lv.%d -> Về Sảnh chuyển sang %s [%s]"):format(targetTier.req, targetTier.map, targetTier.diff), targetTier)
+                        teleportPartyToLobby(("Đủ %s Gold mua Gamepass [%s] -> Về Lobby chờ 5s mua!"):format(formatGoldShort(myGold), nextPass.label), targetTier, true)
+                        break
+                    elseif needUpgradeDiffOrMap then
+                        -- Đã đủ req lvl lên Độ khó mới / Map mới -> Đưa cả Party về Lobby!
+                        allowDungeonReplayNow = false
+                        CFG.autoQueueReplay   = false
+                        teleportPartyToLobby(("Đủ Req Lv.%d -> Về Lobby chuyển sang %s [%s]"):format(targetTier.req, targetTier.map, targetTier.diff), targetTier, false)
                         break
                     else
-                        -- Chưa lên mốc Độ khó mới -> Mở khóa cho phép Replay tự nhiên!
+                        -- Chưa đủ Gold mua Gamepass & chưa lên mốc Độ khó mới -> Mở khóa Replay!
                         allowDungeonReplayNow = true
                         CFG.autoQueueReplay   = true
-                        progressMsg = "Đã nhận Drop Boss 3 -> Đang Replay!"
+                        progressMsg = "Đã nhận Drop Boss 3 -> Replay!"
                     end
                 else
                     allowDungeonReplayNow = false
                     CFG.autoQueueReplay   = false
-                    progressMsg = ("Boss 3 đã chết! Chờ nhận Drop (%.1fs)..."):format(CUSTOM.LOOT_WAIT_TIME - waited)
+                    progressMsg = ("Boss 3 chết! Chờ Drop (%.1fs)..."):format(CUSTOM.LOOT_WAIT_TIME - waited)
                 end
             else
-                -- Chưa giết xong Boss thứ 3 -> KHÓA CỨNG Replay để không bao giờ bị Replay sớm ở Boss 1 hoặc Boss 2!
                 finalBossDeadAt       = nil
                 allowDungeonReplayNow = false
                 CFG.autoQueueReplay   = false
-                if needUpgradeDiffOrMap then
-                    progressMsg = ("Boss: %d/3 (Đủ Lv.%d -> Xong Boss 3 sẽ về Sảnh lên %s)"):format(numKilled, minLvl, targetTier.diff)
+                if canAffordNextPass then
+                    progressMsg = ("Boss: %d/3 (Đủ Gold mua %s -> Xong Boss 3 về Lobby)"):format(numKilled, nextPass.id)
+                elseif needUpgradeDiffOrMap then
+                    progressMsg = ("Boss: %d/3 (Đủ Lv.%d -> Xong Boss 3 lên %s)"):format(numKilled, minLvl, targetTier.diff)
                 end
             end
 
             if hubStatusText then
-                hubStatusText.Text = ("Dungeon | Min Lvl: %d (%s) -> Mục tiêu: %s [%s - Req Lv.%d] | %s")
-                    :format(minLvl, tostring(minOwner), targetTier.map, targetTier.diff, targetTier.req, progressMsg)
+                hubStatusText.Text = ("Dungeon | Min Lvl: %d -> %s [%s] | %s\n%s")
+                    :format(minLvl, targetTier.map, targetTier.diff, progressMsg, passStatusStr)
             end
         end
 
@@ -1050,8 +1447,8 @@ task.spawn(function()
     end
 end)
 
-print(("[Boost] Đã tải | x%.2f | Detection: %s | Tầm: ~%.0f studs")
-    :format(CUSTOM.BOOST, CUSTOM.DETECT_ONLY and "ON" or "OFF", detectionRange()))
+print(("[Boost] Đã tải | x%.2f | Party Alt Sync & Auto Gamepass: ON | Tầm: ~%.0f studs")
+    :format(CUSTOM.BOOST, detectionRange()))
 ]=====]
 
 local fullSelfFile = "local WRAPPER_SOURCE = [=====[" .. WRAPPER_SOURCE .. "]=====]\n"
