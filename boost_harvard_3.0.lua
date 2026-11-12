@@ -1,5 +1,5 @@
 -- =====================================================================
--- Harvard Labs v3.0 — Boss 3 Toggle + Auto Gamepass Toggle + Party Sync
+-- Harvard Labs v3.0 — Fix Boss 3 HealthBar Replay + Auto Gamepass + Party Sync
 -- =====================================================================
 
 local WRAPPER_SOURCE = [=====[
@@ -13,14 +13,14 @@ local CUSTOM = {
     CACHE_HZ            = 15,   -- Tần suất quét mục tiêu mỗi giây
 
     -- Các tính năng có công tắc Bật / Tắt trực tiếp trong Hub Harvard Labs:
-    KILL_THIRD_BOSS     = true, -- Mặc định BẬT khi mở script: Bắt buộc giết xong Boss 3 (Boss cuối) & nhận Drop mới Replay
+    KILL_THIRD_BOSS     = true, -- Mặc định BẬT khi mở script: Bắt buộc giết xong Boss 3 & nhận Drop mới Replay
     AUTO_BUY_GAMEPASS   = true, -- Bật/Tắt tự động về Lobby chờ 5s mua Gamepass (VIP -> x2 Gold -> Extra Item)
     AUTO_REEXECUTE      = true, -- Bật/Tắt tự động chạy lại script khi chuyển giữa Sảnh <-> Dungeon
     AUTO_REHOP          = true, -- Bật/Tắt tự kết nối lại khi mất kết nối
     DRAW_HUD            = true, -- Bật/Tắt vòng tròn tầm đánh dưới chân
 
     -- Thông số thời gian chờ:
-    LOOT_WAIT_TIME      = 5.5,  -- Số giây chờ nhận Drop sau khi Boss cuối chết
+    LOOT_WAIT_TIME      = 5.5,  -- Số giây chờ nhận Drop sau khi Boss 3 chết
     ALT_READY_GRACE     = 3.0,  -- Số giây chờ sau khi tất cả Alt đã load xong ở Sảnh rồi mới bắt đầu Dungeon
     GAMEPASS_WAIT_TIME  = 5.0,  -- Đứng chờ 5s ở Lobby để mua xong Gamepass trước khi vào Dungeon tiếp
 
@@ -122,7 +122,7 @@ local function getTierForLevel(lvl)
 end
 
 local wrapperState = {
-    killThirdBoss  = true, -- Luôn bật mặc định lúc mở script
+    killThirdBoss  = true,
     autoBuyPass    = CUSTOM.AUTO_BUY_GAMEPASS,
     reExecute      = CUSTOM.AUTO_REEXECUTE,
     autoRehop      = CUSTOM.AUTO_REHOP,
@@ -151,7 +151,6 @@ local function loadWrapperState(isInitialLoad)
                 if type(data.partyLevels) == "table"      then wrapperState.partyLevels = data.partyLevels end
                 if type(data.ownedPasses) == "table"      then wrapperState.ownedPasses = data.ownedPasses end
                 if type(data.detectedCosts) == "table"    then wrapperState.detectedCosts = data.detectedCosts end
-                -- Nếu là lần đầu mở script trong phiên, giữ KILL_THIRD_BOSS = true (BẬT mặc định theo yêu cầu)
                 if not isInitialLoad and type(data.killThirdBoss) == "boolean" then
                     wrapperState.killThirdBoss = data.killThirdBoss
                     CUSTOM.KILL_THIRD_BOSS     = data.killThirdBoss
@@ -177,7 +176,6 @@ local function saveWrapperState()
     end
 end
 
--- Khi mới mở script lần đầu, đảm bảo KILL_THIRD_BOSS luôn là BẬT (true)
 local isFirstSessionLoad = not getgenv().HL_BoostInitialized
 getgenv().HL_BoostInitialized = true
 loadWrapperState(isFirstSessionLoad)
@@ -660,7 +658,9 @@ if not context then error("[Boost] Không tìm thấy context trong getgc") end
 local CFG, RT = context.CFG, context.RT
 _G = _G or {}; getgenv = getgenv or function() return _G end
 
--- 3. Áp dụng tùy chỉnh tầm đánh (Scale) & Khóa Replay sớm --------------
+-- =====================================================================
+-- 3. ÁP DỤNG TÙY CHỈNH & TẮT CỜ "FINISH AT ODIN / FINISH BOB ONLY"
+-- =====================================================================
 local KEYS = {
     "aoeRadius", "aoeDistance",
     "abilityRadius", "abilityRangeKnown",
@@ -692,6 +692,21 @@ captureBaseCFG()
 
 local allowDungeonReplayNow = false
 local isBuyingGamepassWait  = false
+
+local function applyBoss3ModeToHarvardCFG()
+    if CUSTOM.KILL_THIRD_BOSS then
+        -- QUAN TRỌNG: Trong leaked_harvard_3.0, finishBobOnly = true & finishAtOdin = true làm Host Replay ngay khi thanh máu Boss 3 xuất hiện!
+        -- Khi bật KILL_THIRD_BOSS (mặc định ON), phải đặt cả 4 cờ này về false để đánh hết Boss 3 và nhận Drop!
+        CFG.finishBobOnly   = false
+        CFG.finishAtOdin    = false
+        CFG.resetAfterBob   = false
+        CFG.resetAfterArena = false
+    else
+        -- Khi người dùng TẮT Giết Boss 3 trên Hub -> Bật lại cơ chế dừng ở Boss 3 của script gốc
+        CFG.finishBobOnly   = true
+        CFG.finishAtOdin    = true
+    end
+end
 
 local function applyCustomSettings()
     for _, k in ipairs(KEYS) do
@@ -729,6 +744,8 @@ local function applyCustomSettings()
     CFG.streamerOthers      = false
     CFG.streamerLeaderboard = false
 
+    applyBoss3ModeToHarvardCFG()
+
     local minLvl, _, canStartNow = syncAndCheckPartyStatus()
     local tier = getTierForLevel(minLvl)
     CFG.autoQueueMap        = tier.map
@@ -750,7 +767,10 @@ end
 if type(context.PERSIST) == "table" then
     for i = #context.PERSIST, 1, -1 do
         local key = context.PERSIST[i]
-        if key == "streamerLevel" or key == "streamerWealth" or key == "streamerOthers" or key == "streamerLeaderboard" or key == "autoQueueReplay" then
+        if key == "streamerLevel" or key == "streamerWealth" or key == "streamerOthers"
+            or key == "streamerLeaderboard" or key == "autoQueueReplay"
+            or key == "finishBobOnly" or key == "finishAtOdin" or key == "resetAfterBob" or key == "resetAfterArena"
+        then
             table.remove(context.PERSIST, i)
         else
             for _, k in ipairs(KEYS) do
@@ -851,33 +871,17 @@ if type(context.gsSlotReady) == "function" then context.gsSlotReady = gate(conte
 if type(context.slotReady) == "function" then context.slotReady = gate(context.slotReady) end
 
 -- =====================================================================
--- 6. THEO DÕI CHÍNH XÁC BOSS 1, BOSS 2, BOSS 3 Ở MỌI MAP (TRÊN HEARTBEAT)
+-- 6. THEO DÕI CHÍNH XÁC THANH MÁU BOSS 1 -> BOSS 2 -> BOSS 3 (CHỐNG REPLAY KHI BOSS 3 VỪA HIỆN THANH MÁU)
 -- =====================================================================
-local seenBossModels   = {}
-local killedBossModels = {}
-local thirdBossSeen    = false
-local thirdBossKilled  = false
+local bossEncounters     = {} -- Danh sách thứ tự các Boss thực sự đã chạm trán: { {name=..., model=..., killed=true/false, spawnedAt=...}, ... }
+local activeBossByModel  = {}
+local lastBossKilledTime = 0
+local mobsSeenSinceLastBoss = false
 
-local function countTableEntries(tbl)
-    local c = 0
-    for _ in pairs(tbl) do c = c + 1 end
-    return c
-end
-
-local function isThirdOrFinalBossName(nameStr)
-    local s = string.lower(tostring(nameStr or ""))
-    return s:find("thirdboss", 1, true)
-        or s:find("finalboss", 1, true)
-        or s:find("lastboss", 1, true)
-        or s:find("odin", 1, true)
-        or s:find("vytelus", 1, true)
-end
-
--- Kiểm tra 1 phần tử GUI có THỰC SỰ hiển thị trên màn hình (Tất cả Frame cha phải Visible == true)
 local function isActuallyVisibleOnScreen(guiObj)
     if not guiObj or not guiObj:IsA("GuiObject") then return false end
     if not guiObj.Visible then return false end
-    if guiObj.AbsoluteSize.X < 8 or guiObj.AbsoluteSize.Y < 8 then return false end
+    if guiObj.AbsoluteSize.X < 6 or guiObj.AbsoluteSize.Y < 4 then return false end
 
     local curr = guiObj.Parent
     while curr do
@@ -893,6 +897,40 @@ local function isActuallyVisibleOnScreen(guiObj)
     return false
 end
 
+-- Kiểm tra Thanh máu Boss trên màn hình (Boss Health Bar GUI) đang hiển thị hay không và lấy tên Boss trên thanh máu
+local function getActiveBossHealthBarInfo()
+    local pgui = LocalPlayer:FindFirstChild("PlayerGui")
+    if not pgui then return false, nil end
+
+    for _, gui in ipairs(pgui:GetChildren()) do
+        if gui:IsA("ScreenGui") and gui.Enabled then
+            local gName = string.lower(gui.Name)
+            if gName:find("boss") or gName == "gamegui" or gName == "hud" or gName == "maingui" then
+                for _, desc in ipairs(gui:GetDescendants()) do
+                    local dName = string.lower(desc.Name)
+                    if (dName:find("bosshealth") or dName:find("bossbar") or dName == "boss") and desc:IsA("GuiObject") then
+                        if isActuallyVisibleOnScreen(desc) then
+                            -- Tìm tên Boss bên trong thanh máu
+                            local bossTitle = nil
+                            for _, sub in ipairs(desc:GetDescendants()) do
+                                if sub:IsA("TextLabel") and isActuallyVisibleOnScreen(sub) then
+                                    local txt = tostring(sub.Text or ""):gsub("^%s+", ""):gsub("%s+$", "")
+                                    if #txt > 2 and not txt:match("^[%d%s,/%%%.]+$") then
+                                        bossTitle = txt
+                                        break
+                                    end
+                                end
+                            end
+                            return true, (bossTitle or "Boss")
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return false, nil
+end
+
 local function isRealEndScreenVisible()
     local pgui = LocalPlayer:FindFirstChild("PlayerGui")
     if not pgui then return false end
@@ -903,7 +941,7 @@ local function isRealEndScreenVisible()
             for _, desc in ipairs(g:GetDescendants()) do
                 if (desc:IsA("TextButton") or desc:IsA("TextLabel")) and isActuallyVisibleOnScreen(desc) then
                     local t = string.lower(desc.Text or "")
-                    if t == "replay" or t == "retry" or t == "play again" or t:find("victory", 1, true) or t:find("complete", 1, true) then
+                    if t == "replay" or t == "play again" or t:find("dungeon complete", 1, true) or t:find("victory!", 1, true) then
                         return true
                     end
                 end
@@ -930,9 +968,65 @@ local function hasAnyClosedBarrierInDungeon()
     return false
 end
 
--- Bắt từng frame trên Heartbeat để:
--- 1) Khóa chặt CFG.autoQueueReplay = false khi chưa xong mục tiêu Boss (tránh script gốc tự Replay sớm)
--- 2) Ghi nhận ngay lập tức mọi Boss vừa xuất hiện / vừa chết (kể cả khi Carry Lv.196 one-shot Boss trong 0.05s ở các map dưới Northern Lands!)
+-- Chỉ nhận diện một Model là Boss thật khi có Humanoid hợp lệ, KHÔNG phải hitbox chiêu thức trong context.ATTACKS
+local function isGenuineBossCharacterModel(m, isTaggedByRD)
+    if not m or not m:IsA("Model") or Players:GetPlayerFromCharacter(m) then return false end
+    local nameLower = string.lower(m.Name)
+    if context.ATTACKS and context.ATTACKS[nameLower] then return false end
+    if context.OURS and context.OURS[nameLower] then return false end
+    if nameLower:find("hitbox", 1, true) or nameLower:find("precast", 1, true) or nameLower:find("beam", 1, true) or nameLower:find("spike", 1, true) or nameLower:find("orb", 1, true) then
+        return false
+    end
+
+    local hum = m:FindFirstChildOfClass("Humanoid")
+    local hrp = m:FindFirstChild("HumanoidRootPart") or m.PrimaryPart
+    if not hum or not hrp or hum.MaxHealth <= 100 then return false end
+
+    if isTaggedByRD or m:FindFirstChild("isBoss") ~= nil or m:GetAttribute("isBoss") == true then
+        return true
+    end
+    return false
+end
+
+local function registerOrUpdateBossEncounter(m, rawName, isAlive)
+    if not m then return end
+    local cleanName = string.lower(tostring(rawName or m.Name)):gsub("^%s+", ""):gsub("%s+$", "")
+
+    local existing = activeBossByModel[m]
+    if existing then
+        if not isAlive and not existing.killed then
+            existing.killed = true
+            existing.diedAt = os.clock()
+            lastBossKilledTime = os.clock()
+            mobsSeenSinceLastBoss = false
+        end
+        return
+    end
+
+    -- Kiểm tra xem có phải cùng 1 đợt Boss vừa xuất hiện (cùng tên và chưa có đợt quái thường nào xen giữa) không
+    local lastEnc = bossEncounters[#bossEncounters]
+    if lastEnc and lastEnc.name == cleanName and not mobsSeenSinceLastBoss and (os.clock() - lastEnc.spawnedAt < 8) then
+        activeBossByModel[m] = lastEnc
+        if isAlive then lastEnc.killed = false end
+        return
+    end
+
+    -- Ghi nhận đợt Boss mới (Wave 1 -> Wave 2 -> Wave 3)
+    local newEnc = {
+        index     = #bossEncounters + 1,
+        name      = cleanName,
+        model     = m,
+        spawnedAt = os.clock(),
+        killed    = not isAlive,
+    }
+    bossEncounters[#bossEncounters + 1] = newEnc
+    activeBossByModel[m] = newEnc
+    if not isAlive then
+        lastBossKilledTime = os.clock()
+        mobsSeenSinceLastBoss = false
+    end
+end
+
 local hbConn
 hbConn = RunService.Heartbeat:Connect(function()
     if RT.destroyed then
@@ -940,58 +1034,37 @@ hbConn = RunService.Heartbeat:Connect(function()
         return
     end
 
+    applyBoss3ModeToHarvardCFG()
+
     if isInDungeon() then
-        -- Khóa cứng autoQueueReplay trên từng frame cho tới khi wrapper xác nhận đã giết xong Boss mục tiêu & nhặt xong Drop!
         if not allowDungeonReplayNow then
             CFG.autoQueueReplay = false
         end
 
         local RD = context.RD
-        if RD and type(RD.famLast) == "table" and RD.famLast["third"] then
-            thirdBossSeen = true
-        end
-
         if RD and type(RD.enemies) == "table" then
             for _, e in ipairs(RD.enemies) do
                 local m = e.model or (e.root and e.root.Parent)
-                if e.isBoss and m then
-                    local bName = e.name or m.Name
-                    seenBossModels[m] = bName
-                    if isThirdOrFinalBossName(bName) then
-                        thirdBossSeen = true
-                    end
-                    if e.humanoid and e.humanoid.Health <= 0 then
-                        killedBossModels[m] = true
-                        if isThirdOrFinalBossName(bName) then
-                            thirdBossKilled = true
-                        end
+                local alive = e.humanoid and e.humanoid.Health > 0
+                if e.isBoss and isGenuineBossCharacterModel(m, true) then
+                    registerOrUpdateBossEncounter(m, e.name or m.Name, alive)
+                elseif alive and not e.isBoss then
+                    -- Có đợt quái thường xuất hiện sau khi giết Boss trước đó (đúng kịch bản: Giết Boss 2 -> Đánh đợt Mobs -> Hiện Boss 3)
+                    if #bossEncounters > 0 and (os.clock() - lastBossKilledTime > 1.5) then
+                        mobsSeenSinceLastBoss = true
                     end
                 end
             end
         end
 
-        -- Kiểm tra trực tiếp trong workspace.enemies cho các map dưới Northern Lands
-        local ef = workspace:FindFirstChild("enemies") or (workspace:FindFirstChild("dungeon") and workspace.dungeon:FindFirstChild("enemies", true))
-        if ef then
-            for _, m in ipairs(ef:GetChildren()) do
-                if m:IsA("Model") and not Players:GetPlayerFromCharacter(m) then
-                    local isBossObj = m:FindFirstChild("isBoss") ~= nil
-                        or m:GetAttribute("isBoss") == true
-                        or isThirdOrFinalBossName(m.Name)
-                        or string.lower(m.Name):find("boss", 1, true)
-                    if isBossObj then
-                        seenBossModels[m] = m.Name
-                        if isThirdOrFinalBossName(m.Name) then
-                            thirdBossSeen = true
-                        end
-                        local hum = m:FindFirstChildOfClass("Humanoid")
-                        if hum and hum.Health <= 0 then
-                            killedBossModels[m] = true
-                            if isThirdOrFinalBossName(m.Name) then
-                                thirdBossKilled = true
-                            end
-                        end
-                    end
+        for m, enc in pairs(activeBossByModel) do
+            if not enc.killed then
+                local hum = m and m.Parent and m:FindFirstChildOfClass("Humanoid")
+                if not m or not m.Parent or (hum and hum.Health <= 0) then
+                    enc.killed = true
+                    enc.diedAt = os.clock()
+                    lastBossKilledTime = os.clock()
+                    mobsSeenSinceLastBoss = false
                 end
             end
         end
@@ -1014,54 +1087,54 @@ local function updateBossProgress()
         end
     end
 
-    for m, bName in pairs(seenBossModels) do
+    local numSeen   = #bossEncounters
+    local numKilled = 0
+    for _, enc in ipairs(bossEncounters) do
+        local m = enc.model
         local hum = m and m.Parent and m:FindFirstChildOfClass("Humanoid")
-        if not m or not m.Parent or (hum and hum.Health <= 0) then
-            killedBossModels[m] = true
-            if isThirdOrFinalBossName(bName) or countTableEntries(killedBossModels) >= 3 then
-                thirdBossKilled = true
-            end
-        elseif hum and hum.Health > 0 then
+        if hum and hum.Health > 0 then
             anyBossAlive  = true
             anyEnemyAlive = true
+            enc.killed    = false
+        elseif enc.killed or not m or not m.Parent or (hum and hum.Health <= 0) then
+            enc.killed = true
+            numKilled  = numKilled + 1
         end
     end
 
-    -- Nếu RD.bossDown của script gốc ghi nhận thêm Boss đã hạ
-    if RD and type(RD.bossDown) == "table" then
-        for bKey, _ in pairs(RD.bossDown) do
-            if isThirdOrFinalBossName(bKey) then
-                thirdBossSeen   = true
-                thirdBossKilled = true
-            end
+    -- Kiểm tra Thanh máu Boss trên màn hình:
+    -- Nếu Thanh máu Boss 3 vừa hiện lên, bossBarVisible sẽ là TRUE -> Tuyệt đối coi là Boss đang sống (anyBossAlive = true), KHÔNG BAO GIỜ REPLAY!
+    local bossBarVisible, bossBarTitle = getActiveBossHealthBarInfo()
+    if bossBarVisible then
+        anyBossAlive = true
+        -- Nếu thanh máu Boss 3 vừa hiện lên sau khi đã giết 2 Boss và dọn xong đợt Mobs, mà model Boss 3 đang trong hoạt ảnh xuất hiện:
+        if numSeen == 2 and numKilled == 2 and mobsSeenSinceLastBoss then
+            numSeen = 3
         end
     end
 
-    local numSeen    = countTableEntries(seenBossModels)
-    local numKilled  = countTableEntries(killedBossModels)
     local realEndGui = isRealEndScreenVisible()
     local hasBarrier = hasAnyClosedBarrierInDungeon()
-
-    local targetBossRequirementMet = false
+    local targetBossDone = false
 
     if CUSTOM.KILL_THIRD_BOSS then
-        -- Khi BẬT "Giết Boss 3 (Boss cuối)":
-        -- Bắt buộc phải không còn Boss nào sống, toàn bộ cửa barrier trong Dungeon đã mở hết,
-        -- VÀ (đã giết đủ 3 Boss HOẶC Boss thứ 3 đã chết HOẶC bảng kết thúc thật sự của game đã bật lên sau khi ít nhất 1 Boss chết)
-        if not anyBossAlive and not anyEnemyAlive and not hasBarrier then
-            if numKilled >= 3 or thirdBossKilled or (realEndGui and numKilled >= 1) then
-                targetBossRequirementMet = true
+        -- Khi BẬT "Giết Boss 3":
+        -- Chỉ hoàn thành khi: Thanh máu Boss ĐÃ TẮT, không còn Boss hay quái sống, không còn cửa barrier đóng,
+        -- VÀ (đã giết đủ 3 đợt Boss HOẶC màn hình Victory/Replay cuối màn thực sự hiện ra sau khi Boss chết).
+        if not anyBossAlive and not bossBarVisible and not anyEnemyAlive and not hasBarrier then
+            if numKilled >= 3 or (realEndGui and numKilled >= 2 and (os.clock() - lastBossKilledTime < 15)) then
+                targetBossDone = true
             end
         end
     else
         -- Khi TẮT "Giết Boss 3":
-        -- Chỉ cần hạ xong Boss 2 (numKilled >= 2) và hiện tại không còn Boss đang sống là cho phép Replay / Về Sảnh!
-        if not anyBossAlive and (numKilled >= 2 or realEndGui) then
-            targetBossRequirementMet = true
+        -- Cho phép dừng ngay sau khi hạ xong Boss 2 (hoặc khi đến Boss 3)
+        if numKilled >= 2 and (not anyBossAlive or numSeen >= 3) then
+            targetBossDone = true
         end
     end
 
-    return targetBossRequirementMet, numKilled, numSeen
+    return targetBossDone, numKilled, numSeen, bossBarVisible, bossBarTitle
 end
 
 -- 7. Auto Re-Execute & Auto Re-Hop -----------------------------------
@@ -1304,19 +1377,14 @@ local function tryInjectNativeCard()
         refresh()
     end
 
-    -- 1. Công tắc Bật/Tắt Giết Boss 3 (Mặc định BẬT khi mở script)
-    makeToggleRow(70,  "Giết Boss 3 (Boss cuối) rồi mới Replay / Chuyển Map", "KILL_THIRD_BOSS", function(v)
-        CFG.finishAtOdin = v
+    makeToggleRow(70,  "Giết Boss 3 (Boss cuối) rồi mới Replay / Chuyển Map", "KILL_THIRD_BOSS", function()
+        applyBoss3ModeToHarvardCFG()
     end)
-    -- 2. Công tắc Bật/Tắt Tự mua Gamepass bằng Gold
     makeToggleRow(104, "Tự mua Gamepass bằng Gold (VIP -> x2 Gold -> Extra Item)", "AUTO_BUY_GAMEPASS")
-    -- 3. Công tắc Auto Re-Execute
     makeToggleRow(138, "Auto Re-Execute (Tự chạy lại khi qua màn)", "AUTO_REEXECUTE", function(v)
         if v then registerAutoReExecute() end
     end)
-    -- 4. Công tắc Auto Re-Hop
     makeToggleRow(172, "Auto Re-Hop (Tự về Sảnh khi mất kết nối)", "AUTO_REHOP")
-    -- 5. Công tắc Vòng tròn tầm đánh HUD
     makeToggleRow(206, "Hiển thị vòng tầm đánh dưới chân (HUD)", "DRAW_HUD", function()
         updateHudPartVisibility()
     end)
@@ -1366,17 +1434,15 @@ task.spawn(function()
         if not isInDungeon() then
             -- ================= ĐANG Ở SẢNH (LOBBY) =================
             resolveLobbyPlaceId()
-            table.clear(seenBossModels)
-            table.clear(killedBossModels)
-            thirdBossSeen               = false
-            thirdBossKilled             = false
+            table.clear(bossEncounters)
+            table.clear(activeBossByModel)
+            mobsSeenSinceLastBoss       = false
             finalBossDeadAt             = nil
             allowDungeonReplayNow       = false
             dungeonStartTierIdx         = targetTier.idx
             wrapperState.enteredTierIdx = targetTier.idx
             saveWrapperState()
 
-            -- BƯỚC A: Nếu bật Auto Buy Gamepass và đủ Gold -> Khóa vào Dungeon & chờ 5s mua xong Gamepass
             if canAffordNextPass then
                 isBuyingGamepassWait = true
                 CFG.autoQueue        = false
@@ -1405,7 +1471,6 @@ task.spawn(function()
                 isBuyingGamepassWait = false
             end
 
-            -- BƯỚC B: Đợi tất cả Alt sẵn sàng ở Sảnh rồi mới bắt đầu Dungeon
             if not canStartDungeonNow or isBuyingGamepassWait then
                 CFG.autoQueue        = false
                 CFG.autoStartDungeon = false
@@ -1470,15 +1535,21 @@ task.spawn(function()
                 end
             end
 
-            local targetBossDone, numKilled, _ = updateBossProgress()
+            local targetBossDone, numKilled, numSeen, bossBarUp, bossBarName = updateBossProgress()
             local needUpgradeDiffOrMap = (targetTier.idx > dungeonStartTierIdx)
             local bossGoalCount = CUSTOM.KILL_THIRD_BOSS and 3 or 2
             local progressMsg = ("Boss đã hạ: %d/%d"):format(numKilled, bossGoalCount)
 
+            if bossBarUp then
+                progressMsg = ("Đang đánh Boss %d/%d (%s)"):format(math.min(numKilled + 1, bossGoalCount), bossGoalCount, tostring(bossBarName or "Boss"))
+            elseif numKilled == 2 and CUSTOM.KILL_THIRD_BOSS and not targetBossDone then
+                progressMsg = "Đã hạ Boss 2 -> Đang dọn Mobs chờ Boss 3!"
+            end
+
             if targetBossDone then
                 if not finalBossDeadAt then
                     finalBossDeadAt = os.clock()
-                    print(("[Boost] Đã hạ xong Boss mục tiêu (%d/%d)! Chờ %.1fs nhận Drop & Gold..."):format(numKilled, bossGoalCount, CUSTOM.LOOT_WAIT_TIME))
+                    print(("[Boost] Đã hạ xong Boss %d/%d! Chờ %.1fs nhận Drop & Gold..."):format(numKilled, bossGoalCount, CUSTOM.LOOT_WAIT_TIME))
                 end
                 local waited = os.clock() - finalBossDeadAt
 
@@ -1514,11 +1585,6 @@ task.spawn(function()
                 finalBossDeadAt       = nil
                 allowDungeonReplayNow = false
                 CFG.autoQueueReplay   = false
-                if canAffordNextPass then
-                    progressMsg = ("Boss: %d/%d (Đủ Gold mua %s -> Xong Boss về Lobby)"):format(numKilled, bossGoalCount, nextPass.id)
-                elseif needUpgradeDiffOrMap then
-                    progressMsg = ("Boss: %d/%d (Đủ Lv.%d -> Xong Boss lên %s)"):format(numKilled, bossGoalCount, minLvl, targetTier.diff)
-                end
             end
 
             if hubStatusText then
@@ -1552,7 +1618,7 @@ task.spawn(function()
     end
 end)
 
-print(("[Boost] Đã tải | x%.2f | Kill Boss 3: %s | Auto Gamepass: %s")
+print(("[Boost] Đã tải | x%.2f | Kill Boss 3: %s (finishBobOnly=false) | Auto Gamepass: %s")
     :format(CUSTOM.BOOST, CUSTOM.KILL_THIRD_BOSS and "ON" or "OFF", CUSTOM.AUTO_BUY_GAMEPASS and "ON" or "OFF"))
 ]=====]
 
