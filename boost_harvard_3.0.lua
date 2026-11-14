@@ -7,7 +7,7 @@ local ORIGINAL_URL = "https://raw.githubusercontent.com/trongkhumnum-creator/pip
 
 -- ============ Bảng Tùy Chỉnh (Custom Tuning) =========================
 local CUSTOM = {
-    BOOST               = 1.5,  -- Hệ số nhân tầm đánh / bán kính kỹ năng (mặc định 1.5)
+    BOOST               = 1.3,  -- Hệ số nhân tầm đánh / bán kính kỹ năng (mặc định 1.5)
     DETECT_ONLY         = true, -- Chỉ tung chiêu khi quái nằm trong tầm trúng
     DETECT_HOLD         = 0.2,  -- Thời gian giữ trạng thái sẵn sàng đánh sau khi quái lệch tầm (giây)
     CACHE_HZ            = 15,   -- Tần suất quét mục tiêu mỗi giây
